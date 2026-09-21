@@ -1,295 +1,140 @@
-# Next AI Draw.io
+# Next AI Draw.io 自部署版
 
-<div align="center">
+基于上游 [DayuanJiang/next-ai-draw-io](https://github.com/DayuanJiang/next-ai-draw-io) 改造的自部署版本：保留原有的 AI 生成 / 编辑 draw.io 图表能力，并加入多用户账号与服务器端持久化，适合自己或小团队在内网、NAS 或服务器上长期使用。
 
-**AI-Powered Diagram Creation Tool - Chat, Draw, Visualize**
+- 本仓库：https://github.com/ting1e/next-ai-draw-io
+- 上游仓库：https://github.com/DayuanJiang/next-ai-draw-io
+- 许可证：[Apache-2.0](./LICENSE)
 
-English | [中文](./docs/cn/README_CN.md) | [日本語](./docs/ja/README_JA.md)
+## 功能
 
-[![TrendShift](https://trendshift.io/api/badge/repositories/15449)](https://next-ai-drawio.jiang.jp/)
+- **用户登录**：邮箱 + 密码；首个用户通过 `/setup` 创建管理员
+- **多用户数据隔离**：每个用户只能访问自己的图表与历史记录
+- **图表保存到服务器**：SQLite 持久化，不再只存在浏览器 IndexedDB 中
+- **文件列表与历史记录**：图库、版本历史、恢复 / 重命名 / 复制 / 下载
+- **跨设备继续编辑**：换浏览器或设备登录后即可看到自己的图表
+- **自部署 draw.io**：使用官方 `jgraph/drawio` 镜像，通过应用同源 `/drawio/*` 代理访问，不依赖 diagrams.net
+- **原有 AI 能力**：自然语言生成 / 修改图表、图片复刻、PDF / 文本导入、多 AI 提供商（OpenAI、Anthropic、Google、DeepSeek 等）
+- **数据自持有**：全部数据保存在 `./data` 目录，更新镜像不会丢失
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Next.js](https://img.shields.io/badge/Next.js-16.x-black)](https://nextjs.org/)
-[![React](https://img.shields.io/badge/React-19.x-61dafb)](https://react.dev/)
-[![Sponsor](https://img.shields.io/badge/Sponsor-❤-ea4aaa)](https://github.com/sponsors/DayuanJiang)
+## 一键部署（Docker Compose）
 
-[![Live Demo](./public/live-demo-button.svg)](https://next-ai-drawio.jiang.jp/)
+只需要 Docker 与 Docker Compose，然后创建一个 `docker-compose.yml`：
 
-</div>
+```yaml
+services:
+    app:
+        # 也可以先执行：docker pull ghcr.io/ting1e/next-ai-draw-io:latest
+        image: ghcr.io/ting1e/next-ai-draw-io:latest
+        restart: unless-stopped
+        environment:
+            # ===== 必须修改 =====
+            AUTH_SECRET: 请改成随机长字符串
+            AUTH_BASE_URL: http://localhost:3000
+            OPENAI_API_KEY: sk-你的Key
+            # ===================
+            AI_PROVIDER: openai
+            AI_MODEL: gpt-5.1
 
-A Next.js web application that integrates AI capabilities with draw.io diagrams. Create, modify, and enhance diagrams through natural language commands and AI-assisted visualization.
+            DATABASE_PATH: /app/data/app.sqlite
+            ALLOW_REGISTRATION: "false"
+            # 安全默认值：禁止访问内网地址、关闭网页导入
+            ALLOW_PRIVATE_URLS: "false"
+            ENABLE_URL_FETCH: "false"
+        volumes:
+            - ./data:/app/data
+        ports:
+            - "3000:3000"
+        depends_on:
+            - drawio
 
-> Note: Thanks to <img src="https://raw.githubusercontent.com/DayuanJiang/next-ai-draw-io/main/public/doubao-color.png" alt="" height="20" /> [ByteDance Doubao](https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=Z9Z3LDTJ&utm_campaign=drawio&utm_content=drawio&utm_medium=devrel&utm_source=OWO&utm_term=drawio) sponsorship, the demo site now uses the powerful glm-4.7 model!
-
-<p align="center">
-  <a href="https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=next-ai-draw-io">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="./public/atlas-cloud-logo-white.svg">
-      <img src="./public/atlas-cloud-logo.svg" alt="Atlas Cloud" width="200">
-    </picture>
-  </a>
-</p>
-
-> 🎁 Thanks to **[Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=next-ai-draw-io)** for sponsoring next-ai-draw-io. Its OpenAI-compatible API gives diagram workflows one provider connection for DeepSeek, Qwen, GLM, Kimi, MiniMax, and more. Budget-friendly access is available through the [Coding Plan](https://www.atlascloud.ai/console/coding-plan).
-
-
-https://github.com/user-attachments/assets/9d60a3e8-4a1c-4b5e-acbb-26af2d3eabd1
-
-
-
-## Table of Contents
-- [Next AI Draw.io](#next-ai-drawio)
-  - [Table of Contents](#table-of-contents)
-  - [Examples](#examples)
-  - [Features](#features)
-  - [MCP Server](#mcp-server)
-    - [Claude Code CLI](#claude-code-cli)
-  - [Getting Started](#getting-started)
-    - [Try it Online](#try-it-online)
-    - [Desktop Application](#desktop-application)
-    - [Run with Docker](#run-with-docker)
-    - [Installation](#installation)
-  - [Deployment](#deployment)
-    - [Deploy to EdgeOne Pages](#deploy-to-edgeone-pages)
-    - [Deploy on Vercel](#deploy-on-vercel)
-    - [Deploy on Cloudflare Workers](#deploy-on-cloudflare-workers)
-    - [Self-Hosted Accounts & Diagram Library](#self-hosted-accounts--diagram-library)
-  - [Multi-Provider Support](#multi-provider-support)
-    - [Server-Side Multi-Model Configuration](#server-side-multi-model-configuration)
-    - [Admin Panel](#admin-panel)
-  - [How It Works](#how-it-works)
-  - [Support \& Contact](#support--contact)
-  - [FAQ](#faq)
-  - [Star History](#star-history)
-
-## Examples
-
-Here are some example prompts and their generated diagrams:
-
-<div align="center">
-<table width="100%">
-  <tr>
-    <td colspan="2" valign="top" align="center">
-      <strong>Animated transformer connectors</strong><br />
-      <p><strong>Prompt:</strong> Give me a **animated connector** diagram of transformer's architecture.</p>
-      <img src="./public/animated_connectors.svg" alt="Transformer Architecture with Animated Connectors" width="480" />
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <strong>RAG Technique Diagram</strong><br />
-      <p><strong>Prompt:</strong> Generate a RAG architecture diagram for **chat application**. Use connected diagram for data ingestion</p>
-      <img src="./public/rag_prod.svg" alt="RAG Architecture Diagram" width="480" />
-    </td>
-    <td width="50%" valign="top">
-      <strong>Authentication using React and AWS</strong><br />
-      <p><strong>Prompt:</strong> Generate authentication process using React with **AWS**. Use Serverless architecture.</p>
-      <img src="./public/auth.svg" alt="Authentication Architecture Diagram" width="480" />
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <strong>Open Innovation</strong><br />
-      <p><strong>Prompt:</strong> Create visualization of Henry Chesbrough's Open Innovation model.</p>
-      <img src="./public/inno.svg" alt="Open Innovation Diagram" width="480" />
-    </td>
-    <td width="50%" valign="top">
-      <strong>Cat sketch</strong><br />
-      <p><strong>Prompt:</strong> Draw a cute cat for me.</p>
-      <img src="./public/cat_demo.svg" alt="Cat Drawing" width="240" />
-    </td>
-  </tr>
-</table>
-</div>
-
-## Features
-
--   **LLM-Powered Diagram Creation**: Leverage Large Language Models to create and manipulate draw.io diagrams directly through natural language commands
--   **Image-Based Diagram Replication**: Upload existing diagrams or images and have the AI replicate and enhance them automatically
--   **PDF & Text File Upload**: Upload PDF documents and text files to extract content and generate diagrams from existing documents
--   **AI Reasoning Display**: View the AI's thinking process for supported models (OpenAI o1/o3, Gemini, Claude, etc.)
--   **Diagram History**: Comprehensive version control that tracks all changes, allowing you to view and restore previous versions of your diagrams before the AI editing.
--   **Interactive Chat Interface**: Communicate with AI to refine your diagrams in real-time
--   **Cloud Architecture Diagram Support**: Specialized support for generating cloud architecture diagrams (AWS, GCP, Azure)
--   **Animated Connectors**: Create dynamic and animated connectors between diagram elements for better visualization
-
-## MCP Server
-
-Use Next AI Draw.io with AI agents like Claude Desktop, Cursor, and VS Code via MCP (Model Context Protocol).
-
-```json
-{
-  "mcpServers": {
-    "drawio": {
-      "command": "npx",
-      "args": ["@next-ai-drawio/mcp-server@latest"]
-    }
-  }
-}
+    drawio:
+        # 服务名必须是 drawio：镜像内的 /drawio 代理指向 http://drawio:8080
+        image: jgraph/drawio:31.4.5
+        restart: unless-stopped
+        # 不需要对外暴露端口，只有 app 通过内部网络访问
 ```
 
-### Claude Code CLI
+启动：
 
 ```bash
-claude mcp add drawio -- npx @next-ai-drawio/mcp-server@latest
+docker compose up -d
 ```
 
-Then ask Claude to create diagrams:
-> "Create a flowchart showing user authentication with login, MFA, and session management"
+然后打开 `http://localhost:3000`。
 
-The diagram appears in your browser in real-time!
-
-See the [MCP Server README](./packages/mcp-server/README.md) for VS Code, Cursor, and other client configurations.
-
-## Getting Started
-
-### Try it Online
-
-No installation needed! Try the app directly on our demo site:
-
-[![Live Demo](./public/live-demo-button.svg)](https://next-ai-drawio.jiang.jp/)
-
-
-
-> **Bring Your Own API Key**: You can use your own API key to bypass usage limits on the demo site. Click the Settings icon in the chat panel to configure your provider and API key. Your key is stored locally in your browser and is never stored on the server.
-
-### Desktop Application
-
-Download the native desktop app for your platform from the [Releases page](https://github.com/DayuanJiang/next-ai-draw-io/releases):
-
-Supported platforms: Windows, macOS, Linux.
-
-### Run with Docker
-
-[Go to Docker Guide](./docs/en/docker.md)
-
-### Installation
-
-1. Clone the repository:
+更新：
 
 ```bash
-git clone https://github.com/DayuanJiang/next-ai-draw-io
-cd next-ai-draw-io
-npm install
-cp env.example .env.local
+docker compose pull
+docker compose up -d
 ```
 
-See the [Provider Configuration Guide](./docs/en/ai-providers.md) for detailed setup instructions for each provider.
-
-2. Run the development server:
+查看日志：
 
 ```bash
-npm run dev
+docker compose logs -f
 ```
 
-3. Open [http://localhost:6002](http://localhost:6002) in your browser to see the application.
+## 首次使用
 
-## Deployment
+1. 打开 `http://localhost:3000`，会自动跳转到 `/setup`
+2. 创建第一个管理员账号（创建完成后 `/setup` 返回 404）
+3. 默认关闭开放注册（`ALLOW_REGISTRATION: "false"`）；需要新用户时再临时打开
+4. 新建 / 编辑图表会自动保存到服务器和 `./data` 目录
+5. 更新镜像不会删除数据库，数据库迁移在容器启动时自动执行
 
-### Deploy to EdgeOne Pages
+## 配置说明
 
-You can deploy with one click using [Tencent EdgeOne Pages](https://pages.edgeone.ai/).
+必须修改：
 
-Deploy by this button: 
+| 变量 | 说明 |
+| --- | --- |
+| `AUTH_SECRET` | 会话加密密钥，随机长字符串：`openssl rand -hex 32` |
+| `AUTH_BASE_URL` | 浏览器实际访问地址，如 `http://192.168.1.10:3000`；填错会无法登录 |
+| `OPENAI_API_KEY` | AI 提供商的 Key（按你使用的提供商替换变量名） |
 
-[![Deploy to EdgeOne Pages](https://cdnstatic.tencentcs.com/edgeone/pages/deploy.svg)](https://edgeone.ai/pages/new?repository-url=https%3A%2F%2Fgithub.com%2FDayuanJiang%2Fnext-ai-draw-io)
+常用可选：
 
-Check out the [Tencent EdgeOne Pages documentation](https://pages.edgeone.ai/document/deployment-overview) for more details.
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_PROVIDER` | `bedrock` | `openai` / `anthropic` / `google` / `deepseek` / `ollama` 等 |
+| `AI_MODEL` | - | 模型 ID（必填），如 `gpt-5.1`、`claude-sonnet-4-5` |
+| `OPENAI_BASE_URL` | - | 自定义 OpenAI 兼容端点 |
+| `DATABASE_PATH` | `/app/data/app.sqlite` | SQLite 路径（容器内） |
+| `ALLOW_REGISTRATION` | `false` | 是否允许注册新用户 |
+| `AUTH_TRUSTED_ORIGINS` | - | 多个访问域名时用逗号分隔 |
+| `ALLOW_PRIVATE_URLS` | `false` | 是否允许客户端配置内网 AI 地址（如 Ollama） |
+| `ENABLE_URL_FETCH` | `false` | 是否启用网页导入（`/api/parse-url`） |
 
-Additionally, deploying through Tencent EdgeOne Pages will also grant you a [daily free quota for DeepSeek models](https://pages.edgeone.ai/document/edge-ai).
+更多变量与完整说明见 [`env.example`](./env.example) 和 [自部署文档](./docs/en/self-hosting.md)。
 
-### Deploy on Vercel 
+> 为了方便直接部署，示例把配置写在 `docker-compose.yml` 的 `environment` 中。
+> 如果仓库是公开的，不要把包含真实 API Key、密码或 `AUTH_SECRET` 的 Compose 文件提交到 GitHub。
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FDayuanJiang%2Fnext-ai-draw-io)
+## 备份
 
-The easiest way to deploy is using [Vercel](https://vercel.com/new), the creators of Next.js. Be sure to **set the environment variables** in the Vercel dashboard as you did in your local `.env.local` file.
+`./data` 目录包含用户、登录会话、图表与历史记录，应定期备份：
 
-See the [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+tar czf drawio-data-backup-$(date +%F).tgz data/
+```
 
-### Deploy on Cloudflare Workers
+也可以在容器 / 源码目录中执行 WAL 安全备份脚本：
 
-[Go to Cloudflare Deploy Guide](./docs/en/cloudflare-deploy.md)
+```bash
+node scripts/db-backup.mjs
+```
 
-### Self-Hosted Accounts & Diagram Library
+`data/` 已在 `.gitignore` 中，**绝对不要提交到 GitHub**。
 
-For a fully self-hosted, multi-user setup with email/password accounts,
-server-side SQLite persistence, per-user diagram libraries, version history
-and local PDF export (no `diagrams.net` services required), see
-[Self-Hosted Accounts & Diagram Library](./docs/en/self-hosting.md).
+## 与上游项目的关系
 
-Setting `AUTH_SECRET` enables this mode; without it the application keeps its
-local-only behavior.
+本项目 fork 自 [DayuanJiang/next-ai-draw-io](https://github.com/DayuanJiang/next-ai-draw-io)（Apache-2.0），在其基础上增加了账号系统、服务端 SQLite 存储、图库与版本历史、自部署 draw.io 代理以及相关安全加固；上游原有的 AI 图表生成能力和大部分文档保持不变。
 
+- 上游仓库与英文文档：https://github.com/DayuanJiang/next-ai-draw-io
+- 本仓库自部署细节：[docs/en/self-hosting.md](./docs/en/self-hosting.md)
 
+## License
 
-## Multi-Provider Support
-
--   [ByteDance Doubao](https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=Z9Z3LDTJ&utm_campaign=drawio&utm_content=drawio&utm_medium=devrel&utm_source=OWO&utm_term=drawio)
--   AWS Bedrock (default)
--   OpenAI
--   Anthropic
--   Google AI
--   Google Vertex AI
--   Azure OpenAI
--   Ollama
--   OpenRouter
--   AIHubMix
--   DeepSeek
--   SiliconFlow
--   ModelScope
--   SGLang
--   Vercel AI Gateway
--   [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=next-ai-draw-io)
-
-
-All providers except AWS Bedrock and OpenRouter support custom endpoints.
-
-📖 **[Detailed Provider Configuration Guide](./docs/en/ai-providers.md)** - See setup instructions for each provider.
-
-### Server-Side Multi-Model Configuration
-
-Administrators can configure multiple server-side models that are available to all users without requiring personal API keys. Configure via `AI_MODELS_CONFIG` environment variable (JSON string) or `ai-models.json` file. For a single-provider quick setup, list comma-separated model IDs in `AI_MODEL`.
-
-### Admin Panel
-
-Set the `ADMIN_PASSWORD` environment variable and visit `/admin` to manage server settings (models, access codes, features, observability, quota) from a web panel instead of hand-editing `.env`.
-
-📖 **[Admin Panel Guide](./docs/en/admin-panel.md)** — setup, precedence rules, and notes.
-
-**Model Requirements**: This task requires strong model capabilities for generating long-form text with strict formatting constraints (draw.io XML). Recommended models include Claude Sonnet 4.5, GPT-5.1, Gemini 3 Pro, and DeepSeek V3.2/R1.
-
-Note that the `claude` series has been trained on draw.io diagrams with cloud architecture logos like AWS, Azure, GCP. So if you want to create cloud architecture diagrams, this is the best choice.
-
-
-## How It Works
-
-The application uses the following technologies:
-
--   **Next.js**: For the frontend framework and routing
--   **Vercel AI SDK** (`ai` + `@ai-sdk/*`): For streaming AI responses and multi-provider support
--   **react-drawio**: For diagram representation and manipulation
-
-Diagrams are represented as XML that can be rendered in draw.io. The AI processes your commands and generates or modifies this XML accordingly.
-
-
-## Support & Contact
-
-**Special thanks to [ByteDance Doubao](https://www.volcengine.com/activity/codingplan?ac=MMAP8JTTCAQ2&rc=Z9Z3LDTJ&utm_campaign=drawio&utm_content=drawio&utm_medium=devrel&utm_source=OWO&utm_term=drawio) for sponsoring the API token usage of the demo site!** Register on the ARK platform to get 500K free tokens for all models!
-
-**Special thanks to [Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=next-ai-draw-io) for sponsoring next-ai-draw-io and supporting its multi-provider ecosystem!** Try its OpenAI-compatible LLM API through the [Atlas Cloud Coding Plan](https://www.atlascloud.ai/console/coding-plan).
-
-If you find this project useful, please consider [sponsoring](https://github.com/sponsors/DayuanJiang) to help me host the live demo site!
-
-For support or inquiries, please open an issue on the GitHub repository or contact the maintainer at:
-
--   Email: me[at]jiang.jp
-
-## FAQ
-
-See [FAQ](./docs/en/FAQ.md) for common issues and solutions.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=DayuanJiang/next-ai-draw-io&type=date&legend=top-left)](https://www.star-history.com/#DayuanJiang/next-ai-draw-io&type=date&legend=top-left)
-
----
+[Apache-2.0](./LICENSE)，与上游项目一致。
