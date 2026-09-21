@@ -1,0 +1,108 @@
+name: Security Baseline
+
+# Repeatable P0 security regression: dependency audit plus the authorization
+# baseline from scripts/security-check.mjs (anonymous 401s, cross-user 404s,
+# body limits, cookies, setup/registration closure, rate limiting, XSS).
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  baseline:
+    name: Dependency audit & authorization baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint check
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test -- --run
+
+      - name: Build
+        run: npm run build
+
+      # Fails on high/critical advisories in production dependencies only.
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium --with-deps
+
+      - name: Install Playwright deps (cached)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      # Single step: the server must stay alive for the whole check.
+      - name: Authorization baseline against a temporary instance
+        env:
+          DATABASE_PATH: ${{ runner.temp }}/ci-security/app.sqlite
+          AUTH_SECRET: ci-security-secret-0123456789abcdef0123456789abcdef
+          AUTH_BASE_URL: http://127.0.0.1:6001
+          ALLOW_REGISTRATION: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$DATABASE_PATH")"
+          node scripts/migrate.mjs
+          npm start > "${{ runner.temp }}/ci-security/server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS "$AUTH_BASE_URL/api/health" >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS -X POST "$AUTH_BASE_URL/api/auth/sign-up/email" \
+            -H "Origin: $AUTH_BASE_URL" -H "Content-Type: application/json" \
+            -d '{"name":"CI User A","email":"user-a@example.test","password":"CI-Passw0rd-A!"}' >/dev/null
+          curl -fsS -X POST "$AUTH_BASE_URL/api/auth/sign-up/email" \
+            -H "Origin: $AUTH_BASE_URL" -H "Content-Type: application/json" \
+            -d '{"name":"CI User B","email":"user-b@example.test","password":"CI-Passw0rd-B!"}' >/dev/null
+          SECURITY_BASE_URL="$AUTH_BASE_URL" \
+          SECURITY_EMAIL_A="user-a@example.test" SECURITY_PASSWORD_A="CI-Passw0rd-A!" \
+          SECURITY_EMAIL_B="user-b@example.test" SECURITY_PASSWORD_B="CI-Passw0rd-B!" \
+          SECURITY_ALLOW_REGISTRATION="true" \
+          SECURITY_EXPECT_URL_FETCH="disabled" \
+          SECURITY_RUN_XSS="1" \
+          npm run security:check
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-security-server-log
+          path: ${{ runner.temp }}/ci-security/server.log
+          retention-days: 7
