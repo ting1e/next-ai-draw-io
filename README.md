@@ -53,6 +53,7 @@ https://github.com/user-attachments/assets/9d60a3e8-4a1c-4b5e-acbb-26af2d3eabd1
     - [Deploy to EdgeOne Pages](#deploy-to-edgeone-pages)
     - [Deploy on Vercel](#deploy-on-vercel)
     - [Deploy on Cloudflare Workers](#deploy-on-cloudflare-workers)
+    - [Self-Hosted Accounts & Diagram Library](#self-hosted-accounts--diagram-library)
   - [Multi-Provider Support](#multi-provider-support)
     - [Server-Side Multi-Model Configuration](#server-side-multi-model-configuration)
     - [Admin Panel](#admin-panel)
@@ -208,6 +209,16 @@ See the [Next.js deployment documentation](https://nextjs.org/docs/app/building-
 ### Deploy on Cloudflare Workers
 
 [Go to Cloudflare Deploy Guide](./docs/en/cloudflare-deploy.md)
+
+### Self-Hosted Accounts & Diagram Library
+
+For a fully self-hosted, multi-user setup with email/password accounts,
+server-side SQLite persistence, per-user diagram libraries, version history
+and local PDF export (no `diagrams.net` services required), see
+[Self-Hosted Accounts & Diagram Library](./docs/en/self-hosting.md).
+
+Setting `AUTH_SECRET` enables this mode; without it the application keeps its
+local-only behavior.
 
 
 

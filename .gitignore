@@ -79,3 +79,25 @@ ai-models.json
 
 # admin panel settings (contains secrets)
 data/
+data-security/
+
+# local backups, logs and databases (never publish user data)
+backups/
+backup/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# keep the example env file committable
+!.env.example
+!.env*.example
