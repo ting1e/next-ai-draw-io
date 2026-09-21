@@ -67,6 +67,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             NEXT_PUBLIC_SHOW_ABOUT_AND_NOTICE=true
+            NEXT_PUBLIC_DRAWIO_BASE_URL=/drawio
+            DRAWIO_INTERNAL_URL=http://drawio:8080
 
       # Push to AWS ECR for App Runner auto-deploy. Only runs in the upstream
       # repository: forks publish to their own GHCR namespace and must not try

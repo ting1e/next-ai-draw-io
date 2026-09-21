@@ -27,6 +27,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ARG NEXT_PUBLIC_DRAWIO_BASE_URL=https://embed.diagrams.net
 ENV NEXT_PUBLIC_DRAWIO_BASE_URL=${NEXT_PUBLIC_DRAWIO_BASE_URL}
 
+# Internal address the app proxies /drawio/* to. next.config.ts reads this when
+# the config is loaded, so it must be set at build time. Defaults to the
+# `drawio` service name used by docker-compose.yml.
+ARG DRAWIO_INTERNAL_URL=http://drawio:8080
+ENV DRAWIO_INTERNAL_URL=${DRAWIO_INTERNAL_URL}
+
 # Build-time argument to show About link and Notice icon
 ARG NEXT_PUBLIC_SHOW_ABOUT_AND_NOTICE=false
 ENV NEXT_PUBLIC_SHOW_ABOUT_AND_NOTICE=${NEXT_PUBLIC_SHOW_ABOUT_AND_NOTICE}
