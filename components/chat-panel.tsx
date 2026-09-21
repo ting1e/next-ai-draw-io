@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import {
+    History,
     MessageSquarePlus,
     PanelRightClose,
     PanelRightOpen,
@@ -14,13 +15,22 @@ import {
     useCallback,
     useEffect,
     useLayoutEffect,
+    useMemo,
     useRef,
     useState,
 } from "react"
 import { flushSync } from "react-dom"
 import { Toaster, toast } from "sonner"
+import { UserMenu } from "@/components/auth/UserMenu"
 import { ButtonWithTooltip } from "@/components/button-with-tooltip"
 import { ChatInput } from "@/components/chat-input"
+import { ConflictDialog } from "@/components/diagrams/ConflictDialog"
+import {
+    ImportLegacyDialog,
+    SERVER_IMPORT_MARKER,
+} from "@/components/diagrams/ImportLegacyDialog"
+import { SaveStatus } from "@/components/diagrams/SaveStatus"
+import { VersionHistoryDialog } from "@/components/diagrams/VersionHistoryDialog"
 import Image from "@/components/image-with-basepath"
 import { ModelConfigDialog } from "@/components/model-config-dialog"
 import { SettingsDialog } from "@/components/settings-dialog"
@@ -30,13 +40,15 @@ import { useDictionary } from "@/hooks/use-dictionary"
 import { getSelectedAIConfig, useModelConfig } from "@/hooks/use-model-config"
 import { useSessionManager } from "@/hooks/use-session-manager"
 import { useValidateDiagram } from "@/hooks/use-validate-diagram"
+import { authClient } from "@/lib/auth/auth-client"
 import { getApiEndpoint } from "@/lib/base-path"
 import { findCachedResponse } from "@/lib/cached-responses"
 import type { DrawioTheme } from "@/lib/drawio-themes"
 import { formatMessage } from "@/lib/i18n/utils"
 import { isPdfFile, isTextFile } from "@/lib/pdf-utils"
-import { sanitizeMessages } from "@/lib/session-storage"
+import { getSessionCount, sanitizeMessages } from "@/lib/session-storage"
 import { STORAGE_KEYS } from "@/lib/storage"
+import { createServerStorageProvider } from "@/lib/storage/server-storage"
 import type { UrlData } from "@/lib/url-utils"
 import { type FileData, useFileProcessor } from "@/lib/use-file-processor"
 import { useQuotaManager } from "@/lib/use-quota-manager"
@@ -128,6 +140,7 @@ export default function ChatPanel({
         captureValidationPng,
         diagramHistory,
         setDiagramHistory,
+        saveDiagramToFile,
     } = useDiagram()
 
     const dict = useDictionary()
@@ -164,12 +177,29 @@ export default function ChatPanel({
 
     const [showSettingsDialog, setShowSettingsDialog] = useState(false)
     const [showModelConfigDialog, setShowModelConfigDialog] = useState(false)
+    const [showVersions, setShowVersions] = useState(false)
 
     // Model configuration hook
     const modelConfig = useModelConfig()
 
+    // Auth state: when auth is enabled the server is the source of truth.
+    const { data: authSession, isPending: authSessionPending } =
+        authClient.useSession()
+    const [authEnabled, setAuthEnabled] = useState<boolean | null>(null)
+    const [showImportDialog, setShowImportDialog] = useState(false)
+
+    const storageProvider = useMemo(() => {
+        if (authEnabled === null) return null
+        if (!authEnabled) return undefined // legacy IndexedDB mode
+        if (authSession) return createServerStorageProvider()
+        return null // auth required, session still loading
+    }, [authEnabled, authSession])
+
     // Session manager for chat history (pass URL session ID for restoration)
-    const sessionManager = useSessionManager({ initialSessionId: urlSessionId })
+    const sessionManager = useSessionManager({
+        initialSessionId: urlSessionId,
+        provider: storageProvider,
+    })
 
     const [input, setInput] = useState("")
     const [dailyRequestLimit, setDailyRequestLimit] = useState(0)
@@ -221,9 +251,20 @@ export default function ChatPanel({
                 setDailyRequestLimit(data.dailyRequestLimit || 0)
                 setDailyTokenLimit(data.dailyTokenLimit || 0)
                 setTpmLimit(data.tpmLimit || 0)
+                setAuthEnabled(!!data.authEnabled)
             })
-            .catch(() => {})
+            .catch(() => {
+                setAuthEnabled(false)
+            })
     }, [])
+
+    // Redirect to the login page when auth is enabled but there is no session
+    useEffect(() => {
+        if (authEnabled && !authSessionPending && !authSession) {
+            const lang = pathname.split("/")[1] || "en"
+            router.replace(`/${lang}/login`)
+        }
+    }, [authEnabled, authSessionPending, authSession, router, pathname])
 
     // Quota management using extracted hook
     const quotaManager = useQuotaManager({
@@ -287,6 +328,9 @@ export default function ChatPanel({
     // When partialXmlRef.current.length > 0, we're in continuation mode
     const partialXmlRef = useRef<string>("")
 
+    // Force a server-side version snapshot after each completed AI edit
+    const pendingVersionRef = useRef(false)
+
     // Persist processed tool call IDs so collapsing the chat doesn't replay old tool outputs
     const processedToolCallsRef = useRef<Set<string>>(new Set())
 
@@ -298,7 +342,7 @@ export default function ChatPanel({
     const localStorageDebounceRef = useRef<ReturnType<
         typeof setTimeout
     > | null>(null)
-    const LOCAL_STORAGE_DEBOUNCE_MS = 1000 // Save at most once per second
+    const LOCAL_STORAGE_DEBOUNCE_MS = 1200 // Save at most once per 1.2 seconds
 
     // Validation state for displaying VLM validation progress
     // Key: toolCallId, Value: ValidationState
@@ -466,7 +510,10 @@ export default function ChatPanel({
                 setShowSettingsDialog(true)
             }
         },
-        onFinish: () => {},
+        onFinish: () => {
+            // A completed AI edit should produce a version snapshot.
+            pendingVersionRef.current = true
+        },
         sendAutomaticallyWhen: ({ messages }) => {
             const isInContinuationMode = partialXmlRef.current.length > 0
 
@@ -582,7 +629,13 @@ export default function ChatPanel({
 
     // Helper: Build session data object for saving (eliminates duplication)
     const buildSessionData = useCallback(
-        async (options: { withThumbnail?: boolean } = {}) => {
+        async (
+            options: {
+                withThumbnail?: boolean
+                createVersion?: boolean
+                versionLabel?: string
+            } = {},
+        ) => {
             const currentDiagramXml = chartXMLRef.current || ""
             // Only capture thumbnail if there's a meaningful diagram (not just empty template)
             const hasRealDiagram = isRealDiagram(currentDiagramXml)
@@ -603,6 +656,8 @@ export default function ChatPanel({
                 diagramXml: currentDiagramXml,
                 thumbnailDataUrl,
                 diagramHistory,
+                createVersion: options.createVersion,
+                versionLabel: options.versionLabel,
             }
         },
         [diagramHistory, getThumbnailSvg],
@@ -682,6 +737,12 @@ export default function ChatPanel({
     const saveCurrentSessionRef = useRef(saveCurrentSession)
     saveCurrentSessionRef.current = saveCurrentSession
 
+    // Track the current session for thumbnail decisions inside the debounce
+    const currentSessionRef = useRef(sessionManager.currentSession)
+    useEffect(() => {
+        currentSessionRef.current = sessionManager.currentSession
+    }, [sessionManager.currentSession])
+
     useEffect(() => {
         if (!hasRestoredRef.current) return
         if (!sessionIsAvailable) return
@@ -707,18 +768,30 @@ export default function ChatPanel({
         const isNodiagramSession =
             justLoadedSessionIdRef.current === scheduledForSessionId
 
-        // Debounce: save after 1 second of no changes
+        // Debounce: save after 1.2 seconds of no changes
         localStorageDebounceRef.current = setTimeout(async () => {
             try {
                 if (messages.length > 0 || hasDiagramNow) {
+                    const createVersion = pendingVersionRef.current
+                    // Only capture/upload a thumbnail when one is missing or
+                    // when a version preview is needed - avoid doing it on
+                    // every autosave tick.
+                    const hasThumbnailAlready =
+                        !!currentSessionRef.current?.thumbnailDataUrl
                     const sessionData = await buildSessionData({
-                        // Only capture thumbnail if there was a diagram AND this isn't a no-diagram session
-                        withThumbnail: hasDiagramNow && !isNodiagramSession,
+                        withThumbnail:
+                            (createVersion || !hasThumbnailAlready) &&
+                            hasDiagramNow &&
+                            !isNodiagramSession,
+                        createVersion,
                     })
-                    await saveCurrentSessionRef.current(
+                    const outcome = await saveCurrentSessionRef.current(
                         sessionData,
                         scheduledForSessionId,
                     )
+                    if (outcome.ok && createVersion) {
+                        pendingVersionRef.current = false
+                    }
                 }
             } catch (error) {
                 console.error("Failed to save session:", error)
@@ -768,9 +841,8 @@ export default function ChatPanel({
             ) {
                 try {
                     // Attempt to save session - browser may not wait for completion
-                    // Skip thumbnail capture as it may not complete in time
                     const sessionData = await buildSessionData({
-                        withThumbnail: false,
+                        withThumbnail: true,
                     })
                     await sessionManager.saveCurrentSession(sessionData)
                 } catch (error) {
@@ -985,6 +1057,127 @@ export default function ChatPanel({
         setDiagramHistory,
         pathname,
     ])
+
+    // Diagram library actions (server-backed storage only)
+    const handleRenameSession = useCallback(
+        async (id: string, title: string) => {
+            try {
+                await sessionManager.renameSession(id, title)
+            } catch (error) {
+                console.error("Failed to rename diagram:", error)
+                toast.error(dict.diagrams.saveError)
+            }
+        },
+        [sessionManager, dict.diagrams.saveError],
+    )
+
+    const handleDuplicateSession = useCallback(
+        async (id: string) => {
+            try {
+                const copy = await sessionManager.duplicateSession(id)
+                if (copy) {
+                    await handleSelectSession(copy.id)
+                }
+            } catch (error) {
+                console.error("Failed to duplicate diagram:", error)
+                toast.error(dict.diagrams.saveError)
+            }
+        },
+        [sessionManager, handleSelectSession, dict.diagrams.saveError],
+    )
+
+    const handleDownloadDiagram = useCallback(
+        (id: string) => {
+            if (sessionManager.providerKind === "server") {
+                const link = document.createElement("a")
+                link.href = getApiEndpoint(`/api/diagrams/${id}/export/drawio`)
+                link.rel = "noopener"
+                document.body.appendChild(link)
+                link.click()
+                document.body.removeChild(link)
+                return
+            }
+            // Local mode can only export the currently open diagram
+            if (id === sessionManager.currentSessionId) {
+                saveDiagramToFile(
+                    "diagram",
+                    "drawio",
+                    sessionId,
+                    dict.save.savedSuccessfully,
+                )
+            } else {
+                toast.error(dict.diagrams.saveError)
+            }
+        },
+        [
+            sessionManager.providerKind,
+            sessionManager.currentSessionId,
+            sessionId,
+            dict.save.savedSuccessfully,
+            dict.diagrams.saveError,
+        ],
+    )
+
+    const handleRestoreVersion = useCallback(
+        (xml: string) => {
+            onDisplayChart(xml, true)
+            chartXMLRef.current = xml
+            justLoadedSessionRef.current = false
+            toast.success(dict.diagrams.saved)
+        },
+        [onDisplayChart, dict.diagrams.saved],
+    )
+
+    const handleSaveVersion = useCallback(async () => {
+        const sessionData = await buildSessionData({ withThumbnail: true })
+        await sessionManager.saveCurrentSession({
+            ...sessionData,
+            createVersion: true,
+            versionLabel: "Manual save",
+        })
+        toast.success(dict.diagrams.saveVersion)
+    }, [buildSessionData, sessionManager, dict.diagrams.saveVersion])
+
+    const handleReloadConflict = useCallback(async () => {
+        const data = await sessionManager.resolveConflictReload()
+        if (data) {
+            justLoadedSessionRef.current = true
+            latestSvgRef.current = data.thumbnailDataUrl || ""
+            syncUIWithSession(data)
+            if (data.id) {
+                router.replace(`?session=${data.id}`, { scroll: false })
+            }
+        }
+    }, [sessionManager, syncUIWithSession, router])
+
+    const handleSaveCopyConflict = useCallback(async () => {
+        const data = await sessionManager.resolveConflictSaveCopy()
+        if (data) {
+            justLoadedSessionRef.current = true
+            latestSvgRef.current = data.thumbnailDataUrl || ""
+            syncUIWithSession(data)
+            if (data.id) {
+                router.replace(`?session=${data.id}`, { scroll: false })
+            }
+        }
+    }, [sessionManager, syncUIWithSession, router])
+
+    // Offer to import legacy IndexedDB diagrams on first authenticated visit
+    useEffect(() => {
+        if (sessionManager.providerKind !== "server") return
+        if (!sessionManager.isAvailable) return
+        if (typeof window === "undefined") return
+        if (localStorage.getItem(SERVER_IMPORT_MARKER)) return
+        let cancelled = false
+        getSessionCount()
+            .then((count) => {
+                if (!cancelled && count > 0) setShowImportDialog(true)
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+    }, [sessionManager.providerKind, sessionManager.isAvailable])
 
     // Handle sending a template directly (called from TemplatePanel)
     const handleSendTemplate = useCallback(
@@ -1318,35 +1511,53 @@ export default function ChatPanel({
                 className={`${isMobile ? "px-3 py-2" : "px-5 py-4"} border-b border-border/50`}
             >
                 <div className="flex items-center justify-between">
-                    <button
-                        type="button"
-                        onClick={handleNewChat}
-                        disabled={
-                            status === "streaming" || status === "submitted"
-                        }
-                        className="flex items-center gap-2 overflow-x-hidden hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        title={dict.nav.newChat}
-                    >
-                        <div className="flex items-center gap-2">
-                            <Image
-                                src={
-                                    darkMode
-                                        ? "/favicon-white.svg"
-                                        : "/favicon.ico"
-                                }
-                                alt="Next AI Drawio"
-                                width={isMobile ? 24 : 28}
-                                height={isMobile ? 24 : 28}
-                                className="rounded flex-shrink-0"
-                            />
-                            <h1
-                                className={`${isMobile ? "text-sm" : "text-base"} font-semibold tracking-tight whitespace-nowrap`}
-                            >
-                                Next AI Drawio
-                            </h1>
-                        </div>
-                    </button>
+                    <div className="flex items-center gap-2 min-w-0">
+                        <button
+                            type="button"
+                            onClick={handleNewChat}
+                            disabled={
+                                status === "streaming" || status === "submitted"
+                            }
+                            className="flex items-center gap-2 overflow-x-hidden hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={dict.nav.newChat}
+                        >
+                            <div className="flex items-center gap-2">
+                                <Image
+                                    src={
+                                        darkMode
+                                            ? "/favicon-white.svg"
+                                            : "/favicon.ico"
+                                    }
+                                    alt="Next AI Drawio"
+                                    width={isMobile ? 24 : 28}
+                                    height={isMobile ? 24 : 28}
+                                    className="rounded flex-shrink-0"
+                                />
+                                <h1
+                                    className={`${isMobile ? "text-sm" : "text-base"} font-semibold tracking-tight whitespace-nowrap`}
+                                >
+                                    Next AI Drawio
+                                </h1>
+                            </div>
+                        </button>
+                        <SaveStatus state={sessionManager.saveState} />
+                    </div>
                     <div className="flex items-center gap-1 justify-end overflow-visible">
+                        {sessionManager.providerKind === "server" &&
+                            sessionManager.currentSessionId && (
+                                <ButtonWithTooltip
+                                    tooltipContent={dict.diagrams.versions}
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => setShowVersions(true)}
+                                    className="hover:bg-accent"
+                                    data-testid="versions-button"
+                                >
+                                    <History
+                                        className={`${isMobile ? "h-4 w-4" : "h-5 w-5"} text-muted-foreground`}
+                                    />
+                                </ButtonWithTooltip>
+                            )}
                         <ButtonWithTooltip
                             tooltipContent={dict.nav.newChat}
                             variant="ghost"
@@ -1375,6 +1586,12 @@ export default function ChatPanel({
                                 className={`${isMobile ? "h-4 w-4" : "h-5 w-5"} text-muted-foreground`}
                             />
                         </ButtonWithTooltip>
+                        {authSession?.user && (
+                            <UserMenu
+                                name={authSession.user.name}
+                                email={authSession.user.email}
+                            />
+                        )}
                         <div className="hidden sm:flex items-center gap-2">
                             {!isMobile && (
                                 <ButtonWithTooltip
@@ -1408,6 +1625,9 @@ export default function ChatPanel({
                     sessions={sessionManager.sessions}
                     onSelectSession={handleSelectSession}
                     onDeleteSession={handleDeleteSession}
+                    onRenameSession={handleRenameSession}
+                    onDuplicateSession={handleDuplicateSession}
+                    onDownloadDiagram={handleDownloadDiagram}
                     loadedMessageIdsRef={loadedMessageIdsRef}
                     validationStates={validationStates}
                     onImproveWithSuggestions={handleImproveWithSuggestions}
@@ -1476,6 +1696,26 @@ export default function ChatPanel({
                 open={showModelConfigDialog}
                 onOpenChange={setShowModelConfigDialog}
                 modelConfig={modelConfig}
+            />
+
+            <ConflictDialog
+                conflict={sessionManager.conflict}
+                onReloadServer={handleReloadConflict}
+                onSaveCopy={handleSaveCopyConflict}
+            />
+
+            <VersionHistoryDialog
+                open={showVersions}
+                onOpenChange={setShowVersions}
+                diagramId={sessionManager.currentSessionId}
+                onRestore={handleRestoreVersion}
+                onSaveVersion={handleSaveVersion}
+            />
+
+            <ImportLegacyDialog
+                open={showImportDialog}
+                onOpenChange={setShowImportDialog}
+                onImported={() => sessionManager.refreshSessions()}
             />
         </div>
     )

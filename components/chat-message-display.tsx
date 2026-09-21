@@ -142,6 +142,7 @@ interface SessionMetadata {
     title: string
     updatedAt: number
     thumbnailDataUrl?: string
+    revision?: number
 }
 
 interface ChatMessageDisplayProps {
@@ -158,6 +159,9 @@ interface ChatMessageDisplayProps {
     sessions?: SessionMetadata[]
     onSelectSession?: (id: string) => void
     onDeleteSession?: (id: string) => void
+    onRenameSession?: (id: string, title: string) => void
+    onDuplicateSession?: (id: string) => void
+    onDownloadDiagram?: (id: string) => void
     loadedMessageIdsRef?: MutableRefObject<Set<string>>
     validationStates?: Record<string, ValidationState>
     onImproveWithSuggestions?: (feedback: string) => void
@@ -181,6 +185,9 @@ export function ChatMessageDisplay({
     sessions = [],
     onSelectSession,
     onDeleteSession,
+    onRenameSession,
+    onDuplicateSession,
+    onDownloadDiagram,
     loadedMessageIdsRef,
     validationStates = {},
     onImproveWithSuggestions,
@@ -670,6 +677,9 @@ export function ChatMessageDisplay({
                     sessions={sessions}
                     onSelectSession={onSelectSession || (() => {})}
                     onDeleteSession={onDeleteSession}
+                    onRenameSession={onRenameSession}
+                    onDuplicateSession={onDuplicateSession}
+                    onDownloadDiagram={onDownloadDiagram}
                     setInput={setInput}
                     setFiles={setFiles}
                     onSendTemplate={onSendTemplate}
