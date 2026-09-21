@@ -20,6 +20,8 @@ export interface ChatSession {
     diagramXml: string
     thumbnailDataUrl?: string // Small PNG preview of the diagram
     diagramHistory?: { svg: string; xml: string }[] // Version history of diagram edits
+    /** Server-side revision used for optimistic concurrency control. */
+    revision?: number
 }
 
 export interface StoredMessage {
@@ -36,6 +38,7 @@ export interface SessionMetadata {
     messageCount: number
     hasDiagram: boolean
     thumbnailDataUrl?: string
+    revision?: number
 }
 
 interface ChatSessionDB extends DBSchema {
