@@ -69,6 +69,10 @@ jobs:
         run: npx playwright install-deps chromium
 
       - name: Build app
+        env:
+          # Allow the default drawio embed origin in the CSP emitted by
+          # next.config.ts; otherwise frame-src 'self' blocks the editor.
+          NEXT_PUBLIC_DRAWIO_BASE_URL: https://embed.diagrams.net
         run: npm run build
 
       - name: Run E2E tests
