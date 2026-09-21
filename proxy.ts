@@ -4,6 +4,24 @@ import type { NextRequest } from "next/server"
 import { NextResponse } from "next/server"
 import { i18n } from "./lib/i18n/config"
 
+const SESSION_COOKIE_NAMES = [
+    "better-auth.session_token",
+    "__Secure-better-auth.session_token",
+]
+
+// Pages reachable without a session when auth is enabled.
+const PUBLIC_PAGE_SEGMENTS = new Set(["login", "setup", "about"])
+
+function isAuthEnabled(): boolean {
+    return Boolean(process.env.AUTH_SECRET)
+}
+
+function hasSessionCookie(request: NextRequest): boolean {
+    return request.cookies
+        .getAll()
+        .some((cookie) => SESSION_COOKIE_NAMES.includes(cookie.name))
+}
+
 function getLocale(request: NextRequest): string | undefined {
     // Negotiator expects plain object so we need to transform headers
     const negotiatorHeaders: Record<string, string> = {}
@@ -55,6 +73,20 @@ export function proxy(request: NextRequest) {
                 request.url,
             ),
         )
+    }
+
+    // When auth is enabled, gate all application pages behind a session.
+    if (isAuthEnabled()) {
+        const segments = pathname.split("/").filter(Boolean)
+        const locale = segments[0]
+        const firstSegment = segments[1] ?? ""
+        const isPublicPage = PUBLIC_PAGE_SEGMENTS.has(firstSegment)
+
+        if (!isPublicPage && !hasSessionCookie(request)) {
+            const loginUrl = new URL(`/${locale}/login`, request.url)
+            loginUrl.searchParams.set("next", pathname)
+            return NextResponse.redirect(loginUrl)
+        }
     }
 }
 
