@@ -5,9 +5,12 @@ import {
     loadAdminProviders,
     mergeSecrets,
 } from "@/lib/admin/providers"
+import { readJsonBody } from "@/lib/validation/http"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const MAX_ADMIN_BODY_BYTES = 1024 * 1024
 
 // Test a model with the client's CURRENT provider state (which may be
 // unsaved). Secret fields arrive either as plaintext (newly typed) or as
@@ -17,12 +20,14 @@ export async function POST(req: Request) {
     const authError = checkAdminAuth(req)
     if (authError) return authError
 
-    let body: { provider?: unknown; modelId?: string }
-    try {
-        body = await req.json()
-    } catch {
-        return Response.json({ error: "Invalid JSON body" }, { status: 400 })
+    const bodyResult = await readJsonBody(req, MAX_ADMIN_BODY_BYTES)
+    if (!bodyResult.ok) {
+        return Response.json(
+            { error: bodyResult.error },
+            { status: bodyResult.status },
+        )
     }
+    const body = bodyResult.data as { provider?: unknown; modelId?: string }
 
     const parsed = AdminProviderSchema.safeParse(body.provider)
     if (!parsed.success || !body.modelId) {

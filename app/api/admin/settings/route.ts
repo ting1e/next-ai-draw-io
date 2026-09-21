@@ -11,9 +11,12 @@ import {
     SETTINGS_REGISTRY,
     type SettingDef,
 } from "@/lib/admin/settings-registry"
+import { readJsonBody } from "@/lib/validation/http"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const MAX_ADMIN_BODY_BYTES = 1024 * 1024
 
 function serializeSettings() {
     const fileValues = loadSettings()
@@ -75,12 +78,14 @@ export async function PUT(req: Request) {
         )
     }
 
-    let body: { values?: Record<string, unknown> }
-    try {
-        body = await req.json()
-    } catch {
-        return Response.json({ error: "Invalid JSON body" }, { status: 400 })
+    const bodyResult = await readJsonBody(req, MAX_ADMIN_BODY_BYTES)
+    if (!bodyResult.ok) {
+        return Response.json(
+            { error: bodyResult.error },
+            { status: bodyResult.status },
+        )
     }
+    const body = bodyResult.data as { values?: Record<string, unknown> }
     if (!body.values || typeof body.values !== "object") {
         return Response.json(
             { error: "Body must contain a values object" },

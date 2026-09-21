@@ -1,11 +1,56 @@
 import { extractFromHtml } from "@extractus/article-extractor"
 import { NextResponse } from "next/server"
 import TurndownService from "turndown"
+import { guardAuth } from "@/lib/auth/server"
 import { isPrivateUrl } from "@/lib/ssrf-protection"
+import { readJsonBody } from "@/lib/validation/http"
 
 const MAX_CONTENT_LENGTH = 150000 // Match PDF limit
 const EXTRACT_TIMEOUT_MS = 15000
+const MAX_PARSE_URL_BODY_BYTES = 64 * 1024
+const MAX_FETCH_BYTES = 5 * 1024 * 1024
 const USER_AGENT = "Mozilla/5.0 (compatible; NextAIDrawio/1.0)"
+
+/**
+ * Reads a remote response body while enforcing a hard byte cap. Without this
+ * a malicious public server could stream an unbounded body into memory.
+ */
+async function readResponseBytes(
+    response: Response,
+    maxBytes: number,
+): Promise<ArrayBuffer | null> {
+    const declaredLength = Number(response.headers.get("content-length") || 0)
+    if (declaredLength > maxBytes) return null
+
+    const reader = response.body?.getReader()
+    if (!reader) return response.arrayBuffer()
+
+    const chunks: Uint8Array[] = []
+    let total = 0
+    try {
+        while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value) continue
+            total += value.byteLength
+            if (total > maxBytes) {
+                await reader.cancel()
+                return null
+            }
+            chunks.push(value)
+        }
+    } catch {
+        return null
+    }
+
+    const merged = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+        merged.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return merged.buffer
+}
 
 // Detect the page's charset so non-UTF-8 pages (Shift_JIS/GBK/EUC/Big5, common
 // on CJK sites) are decoded correctly. Response.text() always assumes UTF-8 and
@@ -34,7 +79,24 @@ function detectCharset(
 
 export async function POST(req: Request) {
     try {
-        const { url } = await req.json()
+        // URL fetching is an optional feature and is disabled unless the
+        // operator explicitly enables it (`ENABLE_URL_FETCH=true`). Having no
+        // endpoint beats patching a complex SSRF guard.
+        if (process.env.ENABLE_URL_FETCH !== "true") {
+            return NextResponse.json({ error: "Not found" }, { status: 404 })
+        }
+
+        const auth = await guardAuth()
+        if (auth.denied) return auth.denied
+
+        const bodyResult = await readJsonBody(req, MAX_PARSE_URL_BODY_BYTES)
+        if (!bodyResult.ok) {
+            return NextResponse.json(
+                { error: bodyResult.error },
+                { status: bodyResult.status },
+            )
+        }
+        const { url } = bodyResult.data as { url?: unknown }
 
         if (!url || typeof url !== "string") {
             return NextResponse.json(
@@ -97,7 +159,15 @@ export async function POST(req: Request) {
                 )
             }
 
-            const buffer = await response.arrayBuffer()
+            const buffer = await readResponseBytes(response, MAX_FETCH_BYTES)
+            if (!buffer) {
+                return NextResponse.json(
+                    {
+                        error: `Remote content exceeds the ${MAX_FETCH_BYTES / 1024 / 1024}MB fetch limit`,
+                    },
+                    { status: 413 },
+                )
+            }
             const charset = detectCharset(contentType, buffer)
             html = new TextDecoder(charset).decode(buffer)
         } catch (err: any) {

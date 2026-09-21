@@ -15,10 +15,14 @@ import {
     isAihubmixStandardBaseURL,
     normalizeMiniMaxBaseURL,
 } from "@/lib/ai-providers"
+import { guardAuth } from "@/lib/auth/server"
 import { allowPrivateUrls, isPrivateUrl } from "@/lib/ssrf-protection"
 import { PROVIDER_INFO, type ProviderName } from "@/lib/types/model-config"
+import { readJsonBody } from "@/lib/validation/http"
 
 export const runtime = "nodejs"
+
+const MAX_VALIDATE_MODEL_BODY_BYTES = 1024 * 1024
 
 interface ValidateRequest {
     provider: string
@@ -35,7 +39,20 @@ interface ValidateRequest {
 
 export async function POST(req: Request) {
     try {
-        const body: ValidateRequest = await req.json()
+        const auth = await guardAuth()
+        if (auth.denied) return auth.denied
+
+        const bodyResult = await readJsonBody(
+            req,
+            MAX_VALIDATE_MODEL_BODY_BYTES,
+        )
+        if (!bodyResult.ok) {
+            return NextResponse.json(
+                { valid: false, error: bodyResult.error },
+                { status: bodyResult.status },
+            )
+        }
+        const body = bodyResult.data as ValidateRequest
         const {
             provider,
             apiKey,

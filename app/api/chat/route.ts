@@ -17,6 +17,7 @@ import {
     SINGLE_SYSTEM_PROVIDERS,
     supportsPromptCaching,
 } from "@/lib/ai-providers"
+import { guardAuth } from "@/lib/auth/server"
 import { findCachedResponse } from "@/lib/cached-responses"
 import {
     isMinimalDiagram,
@@ -39,8 +40,21 @@ import {
     withOutputTokenLimitFallback,
 } from "@/lib/output-token-limit"
 import { findServerModelById } from "@/lib/server-model-config"
+import { allowPrivateUrls, isPrivateUrl } from "@/lib/ssrf-protection"
 import { getSystemPrompt } from "@/lib/system-prompts"
 import { getUserIdFromRequest } from "@/lib/user-id"
+import { readJsonBody } from "@/lib/validation/http"
+
+const DEFAULT_MAX_CHAT_BODY_MB = 25
+
+function getMaxChatBodyBytes(): number {
+    const mb = Number(process.env.MAX_CHAT_BODY_MB)
+    return (
+        (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_MAX_CHAT_BODY_MB) *
+        1024 *
+        1024
+    )
+}
 
 // No explicit cap: a reasoning model can spend minutes planning before it emits
 // the tool call, so take whatever the host allows. Vercel's own default is 300s,
@@ -95,15 +109,38 @@ async function handleChatRequest(req: Request): Promise<Response> {
         }
     }
 
-    const body = await req.json()
-    const { messages, xml, previousXml, sessionId } = body
+    // When accounts are enabled, chat is a private, authenticated feature.
+    // In legacy mode (no AUTH_SECRET) it stays public for local use.
+    const auth = await guardAuth()
+    if (auth.denied) return auth.denied
+
+    const body = await readJsonBody(req, getMaxChatBodyBytes())
+    if (!body.ok) {
+        return Response.json({ error: body.error }, { status: body.status })
+    }
+    const { messages, xml, previousXml, sessionId } = body.data as {
+        messages: any[]
+        xml?: string
+        previousXml?: string
+        sessionId?: unknown
+    }
     const customSystemMessage =
-        typeof body.customSystemMessage === "string"
-            ? body.customSystemMessage.slice(0, 5000)
+        typeof (body.data as { customSystemMessage?: unknown })
+            .customSystemMessage === "string"
+            ? (
+                  body.data as { customSystemMessage: string }
+              ).customSystemMessage.slice(0, 5000)
             : ""
 
-    // Get user ID for Langfuse tracking and quota
-    const userId = getUserIdFromRequest(req)
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return Response.json(
+            { error: "messages must be a non-empty array" },
+            { status: 400 },
+        )
+    }
+
+    // Prefer the authenticated identity; IP-derived ids remain for legacy mode.
+    const userId = auth.user?.id ?? getUserIdFromRequest(req)
 
     // Validate sessionId for Langfuse (must be string, max 200 chars)
     const validSessionId =
@@ -182,8 +219,19 @@ async function handleChatRequest(req: Request): Promise<Response> {
 
     // Read client AI provider overrides from headers
     const provider = req.headers.get("x-ai-provider")
-    let baseUrl = req.headers.get("x-ai-base-url")
+    const clientBaseUrl = req.headers.get("x-ai-base-url")
+    let baseUrl = clientBaseUrl
     const selectedModelId = req.headers.get("x-selected-model-id")
+
+    // SECURITY: client-supplied base URLs must not reach private/internal
+    // hosts when ALLOW_PRIVATE_URLS=false (same policy as /api/validate-model).
+    if (
+        clientBaseUrl &&
+        !allowPrivateUrls() &&
+        (await isPrivateUrl(clientBaseUrl))
+    ) {
+        return Response.json({ error: "Invalid base URL" }, { status: 400 })
+    }
 
     // For EdgeOne provider, construct full URL from request origin
     // because createOpenAI needs absolute URL, not relative path

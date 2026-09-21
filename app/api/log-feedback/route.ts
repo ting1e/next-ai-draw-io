@@ -1,7 +1,11 @@
 import { randomUUID } from "crypto"
 import { z } from "zod"
+import { guardAuth } from "@/lib/auth/server"
 import { getLangfuseClient } from "@/lib/langfuse"
 import { getUserIdFromRequest } from "@/lib/user-id"
+import { readJsonBody } from "@/lib/validation/http"
+
+const MAX_LOG_BODY_BYTES = 64 * 1024
 
 const feedbackSchema = z.object({
     messageId: z.string().min(1).max(200),
@@ -15,10 +19,20 @@ export async function POST(req: Request) {
         return Response.json({ success: true, logged: false })
     }
 
+    const auth = await guardAuth()
+    if (auth.denied) return auth.denied
+
     // Validate input
+    const bodyResult = await readJsonBody(req, MAX_LOG_BODY_BYTES)
+    if (!bodyResult.ok) {
+        return Response.json(
+            { success: false, error: bodyResult.error },
+            { status: bodyResult.status },
+        )
+    }
     let data
     try {
-        data = feedbackSchema.parse(await req.json())
+        data = feedbackSchema.parse(bodyResult.data)
     } catch {
         return Response.json(
             { success: false, error: "Invalid input" },
@@ -33,8 +47,8 @@ export async function POST(req: Request) {
         return Response.json({ success: true, logged: false })
     }
 
-    // Get user ID for tracking
-    const userId = getUserIdFromRequest(req)
+    // Get user ID for tracking (authenticated identity wins over IP)
+    const userId = auth.user?.id ?? getUserIdFromRequest(req)
 
     try {
         // Find the most recent chat trace for this session to attach the score to

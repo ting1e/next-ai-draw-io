@@ -9,9 +9,12 @@ import {
 } from "@/lib/admin/providers"
 import { isSettingsWritable, saveSettings } from "@/lib/admin/settings"
 import { loadEnvServerModelsConfig } from "@/lib/server-model-config"
+import { readJsonBody } from "@/lib/validation/http"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const MAX_ADMIN_BODY_BYTES = 1024 * 1024
 
 async function payload() {
     // Env-based providers (AI_MODELS_CONFIG / ai-models.json) are shown
@@ -55,12 +58,14 @@ export async function PUT(req: Request) {
         )
     }
 
-    let body: unknown
-    try {
-        body = await req.json()
-    } catch {
-        return Response.json({ error: "Invalid JSON body" }, { status: 400 })
+    const bodyResult = await readJsonBody(req, MAX_ADMIN_BODY_BYTES)
+    if (!bodyResult.ok) {
+        return Response.json(
+            { error: bodyResult.error },
+            { status: bodyResult.status },
+        )
     }
+    const body = bodyResult.data
 
     const parsed = AdminProvidersSchema.safeParse(
         (body as { providers?: unknown })?.providers,

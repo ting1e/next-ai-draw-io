@@ -5,6 +5,8 @@
 
 import { streamObject } from "ai"
 import { getValidationModel } from "@/lib/ai-providers"
+import { guardAuth } from "@/lib/auth/server"
+import { readJsonBody } from "@/lib/validation/http"
 import { VALIDATION_SYSTEM_PROMPT } from "@/lib/validation-prompts"
 import {
     type ValidationResult,
@@ -12,6 +14,8 @@ import {
 } from "@/lib/validation-schema"
 
 export const maxDuration = 30
+
+const MAX_VALIDATE_DIAGRAM_BODY_BYTES = 10 * 1024 * 1024
 
 interface ValidateDiagramRequest {
     imageData: string // Base64 PNG data URL
@@ -45,14 +49,27 @@ function createStreamingResponse(result: ValidationResult): Response {
 
 export async function POST(req: Request): Promise<Response> {
     try {
+        const auth = await guardAuth()
+        if (auth.denied) return auth.denied
+
         // Check if VLM validation is enabled (default: true)
         const enableValidation = process.env.ENABLE_VLM_VALIDATION !== "false"
         if (!enableValidation) {
             return createStreamingResponse(DEFAULT_VALID_RESULT)
         }
 
-        const body: ValidateDiagramRequest = await req.json()
-        const { imageData, sessionId } = body
+        const bodyResult = await readJsonBody(
+            req,
+            MAX_VALIDATE_DIAGRAM_BODY_BYTES,
+        )
+        if (!bodyResult.ok) {
+            return Response.json(
+                { error: bodyResult.error },
+                { status: bodyResult.status },
+            )
+        }
+        const { imageData, sessionId } =
+            bodyResult.data as ValidateDiagramRequest
 
         if (!imageData) {
             return Response.json(

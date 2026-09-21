@@ -1,6 +1,10 @@
 import { randomUUID } from "crypto"
 import { z } from "zod"
+import { guardAuth } from "@/lib/auth/server"
 import { getLangfuseClient } from "@/lib/langfuse"
+import { readJsonBody } from "@/lib/validation/http"
+
+const MAX_LOG_BODY_BYTES = 64 * 1024
 
 const saveSchema = z.object({
     filename: z.string().min(1).max(255),
@@ -14,10 +18,20 @@ export async function POST(req: Request) {
         return Response.json({ success: true, logged: false })
     }
 
+    const auth = await guardAuth()
+    if (auth.denied) return auth.denied
+
     // Validate input
+    const bodyResult = await readJsonBody(req, MAX_LOG_BODY_BYTES)
+    if (!bodyResult.ok) {
+        return Response.json(
+            { success: false, error: bodyResult.error },
+            { status: bodyResult.status },
+        )
+    }
     let data
     try {
-        data = saveSchema.parse(await req.json())
+        data = saveSchema.parse(bodyResult.data)
     } catch {
         return Response.json(
             { success: false, error: "Invalid input" },
