@@ -1,20 +1,100 @@
 services:
-  drawio:
-    image: jgraph/drawio:latest
-    ports: ["8080:8080"]
-  next-ai-draw-io:
-    build:
-      context: .
-      args:
-        - NEXT_PUBLIC_DRAWIO_BASE_URL=http://localhost:8080
-        # Uncomment below for subdirectory deployment
-        # - NEXT_PUBLIC_BASE_PATH=/nextaidrawio
-    ports: ["3000:3000"]
-    env_file: .env
-    volumes:
-      # Persists admin panel settings (data/settings.json)
-      - ./data:/app/data
-    # environment:
-    #   # For subdirectory deployment, uncomment and set your path:
-    #   NEXT_PUBLIC_BASE_PATH: /nextaidrawio
-    depends_on: [drawio]
+    app:
+        build:
+            context: .
+            # Host networking lets the build reach a proxy running on the
+            # host (e.g. https_proxy=http://localhost:8080).
+            network: host
+            args:
+                # Build-time (NEXT_PUBLIC_*) same-origin path for draw.io.
+                # The app proxies /drawio/* to the drawio service, so draw.io
+                # is never published separately.
+                NEXT_PUBLIC_DRAWIO_BASE_URL: /drawio
+                # Internal address the app proxies /drawio/* to.
+                DRAWIO_INTERNAL_URL: http://drawio:8080
+                # Proxy passthrough: when http_proxy/https_proxy are exported
+                # in the shell, npm downloads use the local proxy. Unset means
+                # a direct connection. `npm run docker:build` /
+                # `npm run docker:up` detect a local proxy automatically
+                # (env, Docker daemon systemd config, or ~/.docker/config.json)
+                # and fill these in.
+                HTTP_PROXY: ${http_proxy:-}
+                HTTPS_PROXY: ${https_proxy:-}
+                http_proxy: ${http_proxy:-}
+                https_proxy: ${https_proxy:-}
+                NO_PROXY: ${no_proxy:-}
+                no_proxy: ${no_proxy:-}
+        environment:
+            # ==========================================
+            # Authentication - CHANGE AUTH_SECRET!
+            # ==========================================
+            # AUTH_SECRET enables the account/diagram-library mode.
+            # Generate one with: openssl rand -hex 32
+            AUTH_SECRET: change-me-to-a-long-random-string
+            # Public origin of this app (scheme://host:port as users reach it).
+            # Host port 19860 maps to the app container port 3000.
+            AUTH_BASE_URL: http://localhost:19860
+            # Extra trusted origins (comma-separated) if the app is reachable
+            # from more than one origin, e.g. a LAN IP:
+            # AUTH_TRUSTED_ORIGINS: http://192.168.1.10:3000
+            # Allow new users to register after the first administrator exists.
+            ALLOW_REGISTRATION: "false"
+
+            # ==========================================
+            # Security hardening
+            # ==========================================
+            # Reject client-supplied AI base URLs that resolve to private /
+            # internal addresses (SSRF protection). Set to "true" only if you
+            # intentionally point the app at a LAN AI server such as Ollama.
+            ALLOW_PRIVATE_URLS: "false"
+            # Web-page import (POST /api/parse-url) is disabled by default:
+            # it is an authenticated server-side fetch, and disabling it
+            # removes the SSRF surface entirely. Set to "true" to enable the
+            # URL import feature for signed-in users.
+            ENABLE_URL_FETCH: "false"
+
+            # ==========================================
+            # Database / storage
+            # ==========================================
+            DATABASE_PATH: /app/data/app.sqlite
+
+            # ==========================================
+            # AI provider - add the variables for yours
+            # (see env.example for the full list)
+            # ==========================================
+            # AI_PROVIDER: openai
+            # OPENAI_API_KEY: sk-...
+            # AI_MODEL: gpt-4o
+        ports:
+            - "19860:3000"
+        volumes:
+            - ./data:/app/data
+        depends_on:
+            - drawio
+        restart: unless-stopped
+        networks:
+            - app-net
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+                ]
+            interval: 30s
+            timeout: 5s
+            start_period: 20s
+            retries: 3
+
+    drawio:
+        # Pin the version: do not track :latest in production.
+        image: jgraph/drawio:31.4.5
+        restart: unless-stopped
+        # No published port: reachable only by the app through the internal
+        # network and exposed to browsers at <app-origin>/drawio/*.
+        networks:
+            - app-net
+
+networks:
+    app-net:

@@ -2,7 +2,7 @@
 
 # Stage 1: Install dependencies
 FROM node:24-alpine AS deps
-RUN apk add --no-cache libc6-compat
+RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
 
 # Copy package files
@@ -54,6 +54,14 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
+# su-exec lets the entrypoint drop root privileges. Also patch the base
+# image's OpenSSL packages and remove the npm CLI: npm is only needed while
+# building and its bundled dependency tree keeps collecting advisories that
+# are unreachable at runtime.
+RUN apk add --no-cache su-exec \
+    && apk upgrade --no-cache libcrypto3 libssl3 \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 # Copy necessary files
 COPY --from=builder /app/public ./public
 
@@ -61,16 +69,23 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Writable dir for admin panel settings (data/settings.json)
-RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
+# Drizzle migrations + migration/backup scripts (run before Next.js starts)
+COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
+COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+# drizzle-orm is bundled into the Next.js server chunks but the standalone
+# migration script imports it directly, so keep a copy on disk.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
 
-USER nextjs
+# Writable dir for SQLite database and admin panel settings (data/settings.json)
+RUN mkdir -p /app/data && chown nextjs:nodejs /app/data \
+    && chmod +x /app/scripts/docker-entrypoint.sh
 
 EXPOSE 3000
 
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Start the application (HOSTNAME override needed for AWS App Runner)
-CMD ["sh", "-c", "HOSTNAME=0.0.0.0 exec node server.js"]
+# The entrypoint fixes ownership of the mounted /app/data, runs migrations
+# (aborting startup on failure), then drops privileges and starts the server.
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 

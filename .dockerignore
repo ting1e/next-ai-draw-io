@@ -4,6 +4,26 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Local data: NEVER bake SQLite databases (users, sessions, diagrams) or
+# backups into image layers.
+data/
+data-security/
+backups/
+backup/
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-shm
+*.sqlite-wal
+*.db-wal
+*.db-shm
+
+# Keys and certificates (CA bundles live in the base image, not the context)
+*.pem
+*.key
+*.p12
+*.pfx
+
 # Build output
 .next
 out
@@ -13,14 +33,22 @@ build
 # Testing
 coverage
 .nyc_output
+tests
+playwright.config.ts
+vitest.config.mts
+
+# Not needed by the web runtime (electron/*.d.ts is needed for type-check,
+# so the electron directory stays in the build context)
+packages
+edge-functions
+open-next.config.ts
+vercel.json
 
 # Environment variables
 .env
-.env*.local
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env*
+!.env.example
+!.env*.example
 
 # Git
 .git

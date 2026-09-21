@@ -80,6 +80,19 @@ export default function Home() {
         if (electronDetected) {
             setIsElectron(true)
             setDrawioBaseUrl(`${window.location.origin}/drawio/index.html`)
+        } else {
+            // A relative NEXT_PUBLIC_DRAWIO_BASE_URL (e.g. "/drawio") is
+            // served through the app's own /drawio rewrite, so resolve it
+            // against the current origin. This keeps it host-agnostic.
+            const configured = process.env.NEXT_PUBLIC_DRAWIO_BASE_URL
+            if (configured?.startsWith("/")) {
+                const base = configured.replace(/\/$/, "")
+                setDrawioBaseUrl(
+                    base.endsWith(".html")
+                        ? `${window.location.origin}${base}`
+                        : `${window.location.origin}${base}/index.html`,
+                )
+            }
         }
 
         setIsLoaded(true)

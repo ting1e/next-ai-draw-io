@@ -1,0 +1,42 @@
+# Security-test staging stack. Completely isolated from production:
+#   - separate compose project (use: docker compose -p next-ai-draw-io-security -f docker-compose.security.yml ...)
+#   - separate data directory ./data-security (safe to delete)
+#   - app published on 127.0.0.1 only
+# Uses the already-built production image so the tested code matches production.
+#
+# Usage:
+#   docker compose -p next-ai-draw-io-security -f docker-compose.security.yml up -d
+#   docker compose -p next-ai-draw-io-security -f docker-compose.security.yml down -v
+
+services:
+    app:
+        image: next-ai-draw-io-app:latest
+        environment:
+            # Test-only secret; NOT the production secret.
+            AUTH_SECRET: security-test-only-secret-0123456789
+            AUTH_BASE_URL: http://127.0.0.1:19870
+            # Accounts already seeded; now verify the disabled-registration path.
+            ALLOW_REGISTRATION: "false"
+            DATABASE_PATH: /app/data/app.sqlite
+            # Mirror the production hardening defaults so the checks cover them.
+            ALLOW_PRIVATE_URLS: "false"
+            ENABLE_URL_FETCH: "false"
+            NODE_ENV: production
+        ports:
+            - "127.0.0.1:19870:3000"
+        volumes:
+            - ./data-security:/app/data
+        depends_on:
+            - drawio
+        restart: "no"
+        networks:
+            - sec-net
+
+    drawio:
+        image: jgraph/drawio:31.4.5
+        restart: "no"
+        networks:
+            - sec-net
+
+networks:
+    sec-net:
