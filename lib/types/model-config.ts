@@ -214,6 +214,27 @@ export const PROVIDER_INFO: Record<
     },
 }
 
+// Providers whose model list can be auto-fetched through the generic
+// OpenAI-compatible `GET {baseUrl}/models` endpoint (see /api/provider-models).
+// Special APIs (Anthropic /v1/models, Google /v1beta/models, Ollama /api/tags,
+// Bedrock ListFoundationModels) are not covered yet.
+export const OPENAI_COMPATIBLE_MODEL_LIST_PROVIDERS: ProviderName[] = [
+    "openai",
+    "deepseek",
+    "siliconflow",
+    "openrouter",
+    "qwen",
+    "glm",
+    "kimi",
+    "modelscope",
+    "doubao",
+    "novita",
+    "mimo",
+    "qiniu",
+    "atlascloud",
+    "sglang",
+]
+
 // Suggested models per provider for quick add
 export const SUGGESTED_MODELS: Partial<Record<ProviderName, string[]>> = {
     openai: [

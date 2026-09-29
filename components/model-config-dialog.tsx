@@ -5,6 +5,7 @@ import {
     Check,
     ChevronRight,
     Clock,
+    CloudDownload,
     Eye,
     EyeOff,
     Key,
@@ -57,7 +58,11 @@ import type { UseModelConfigReturn } from "@/hooks/use-model-config"
 import { getApiEndpoint } from "@/lib/base-path"
 import { formatMessage } from "@/lib/i18n/utils"
 import type { ProviderConfig, ProviderName } from "@/lib/types/model-config"
-import { PROVIDER_INFO, SUGGESTED_MODELS } from "@/lib/types/model-config"
+import {
+    OPENAI_COMPATIBLE_MODEL_LIST_PROVIDERS,
+    PROVIDER_INFO,
+    SUGGESTED_MODELS,
+} from "@/lib/types/model-config"
 import { cn } from "@/lib/utils"
 
 interface ModelConfigDialogProps {
@@ -141,6 +146,14 @@ export function ModelConfigDialog({
     >({})
     const [loadingSuggestedProvider, setLoadingSuggestedProvider] =
         useState<ProviderName | null>(null)
+    // Models fetched live from the provider API via /api/provider-models,
+    // keyed by the provider CONFIG id (two entries of the same provider type
+    // can point at different Base URLs).
+    const [fetchedModels, setFetchedModels] = useState<
+        Partial<Record<string, string[]>>
+    >({})
+    const [fetchingModels, setFetchingModels] = useState(false)
+    const [fetchModelError, setFetchModelError] = useState("")
 
     const {
         config,
@@ -220,14 +233,80 @@ export function ModelConfigDialog({
         }
     }, [open, selectedProvider?.provider, loadedSuggestedProviders.aihubmix])
 
-    // Get suggested models for current provider
+    // Get suggested models for current provider. Live-fetched models (per
+    // provider config) win over AIHubMix's dynamic list, which wins over the
+    // static suggestion list.
     const suggestedModels = selectedProvider
-        ? dynamicSuggestedModels[selectedProvider.provider] ||
+        ? fetchedModels[selectedProvider.id] ||
+          dynamicSuggestedModels[selectedProvider.provider] ||
           SUGGESTED_MODELS[selectedProvider.provider] ||
           []
         : []
     const isLoadingSuggestedModels =
         selectedProvider?.provider === loadingSuggestedProvider
+    const canFetchModels =
+        !!selectedProvider &&
+        OPENAI_COMPATIBLE_MODEL_LIST_PROVIDERS.includes(
+            selectedProvider.provider,
+        )
+
+    // Fetch the model list from the provider API and load it into the
+    // suggestion dropdown. The user then picks which models to add - nothing
+    // is added automatically. Failures leave the manual input untouched.
+    const handleFetchModels = useCallback(async () => {
+        if (!selectedProvider || !selectedProviderId || fetchingModels) return
+
+        setFetchingModels(true)
+        setFetchModelError("")
+        try {
+            const response = await fetch(
+                getApiEndpoint("/api/provider-models"),
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        provider: selectedProvider.provider,
+                        apiKey: selectedProvider.apiKey,
+                        baseUrl: selectedProvider.baseUrl,
+                    }),
+                },
+            )
+            const data = await response.json().catch(() => null)
+            if (!response.ok || data?.error) {
+                throw new Error(
+                    data?.error ||
+                        `Request failed with status ${response.status}`,
+                )
+            }
+            const models = Array.isArray(data?.models)
+                ? data.models.filter(
+                      (model: unknown): model is string =>
+                          typeof model === "string" && model.length > 0,
+                  )
+                : []
+            if (models.length === 0) {
+                throw new Error(dict.modelConfig.fetchModelsEmpty)
+            }
+            setFetchedModels((current) => ({
+                ...current,
+                [selectedProviderId]: models,
+            }))
+        } catch (error) {
+            setFetchModelError(
+                error instanceof Error
+                    ? error.message
+                    : dict.modelConfig.fetchModelsFailed,
+            )
+        } finally {
+            setFetchingModels(false)
+        }
+    }, [
+        selectedProvider,
+        selectedProviderId,
+        fetchingModels,
+        dict.modelConfig.fetchModelsEmpty,
+        dict.modelConfig.fetchModelsFailed,
+    ])
 
     // Filter out already-added models from suggestions
     const existingModelIds =
@@ -266,6 +345,7 @@ export function ModelConfigDialog({
         ]
         if (credentialFields.includes(field)) {
             setValidationStatus("idle")
+            setFetchModelError("")
             updateProvider(selectedProviderId, { validated: false })
         }
     }
@@ -563,6 +643,7 @@ export function ModelConfigDialog({
                                                 )
                                                 setValidationStatus("idle")
                                                 setShowApiKey(false)
+                                                setFetchModelError("")
                                             }}
                                             className={cn(
                                                 "group flex items-center gap-3 px-3 py-2.5 rounded-xl w-full",
@@ -763,6 +844,42 @@ export function ModelConfigDialog({
                                         icon={Sparkles}
                                         action={
                                             <div className="flex items-center gap-2">
+                                                {canFetchModels && (
+                                                    <div className="flex flex-col items-end gap-1">
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            className="h-8 rounded-lg"
+                                                            onClick={
+                                                                handleFetchModels
+                                                            }
+                                                            disabled={
+                                                                fetchingModels
+                                                            }
+                                                            title={
+                                                                dict.modelConfig
+                                                                    .fetchModelsHint
+                                                            }
+                                                        >
+                                                            {fetchingModels ? (
+                                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                            ) : (
+                                                                <CloudDownload className="h-3.5 w-3.5" />
+                                                            )}
+                                                            {
+                                                                dict.modelConfig
+                                                                    .fetchModels
+                                                            }
+                                                        </Button>
+                                                        {fetchModelError && (
+                                                            <p className="max-w-56 text-right text-[11px] text-destructive">
+                                                                {
+                                                                    fetchModelError
+                                                                }
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                )}
                                                 <div className="relative">
                                                     <Input
                                                         placeholder={

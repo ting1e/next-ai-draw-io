@@ -38,6 +38,39 @@ describe("isPrivateUrl", () => {
         expect(lookupMock).not.toHaveBeenCalled()
     })
 
+    it("blocks reserved, test-net and multicast IPv4 ranges without DNS", async () => {
+        // IETF protocol assignments / TEST-NETs (RFC 5737)
+        expect(await isPrivateUrl("http://192.0.0.1/")).toBe(true)
+        expect(await isPrivateUrl("http://192.0.2.5/")).toBe(true)
+        expect(await isPrivateUrl("http://198.51.100.7/")).toBe(true)
+        expect(await isPrivateUrl("http://203.0.113.9/")).toBe(true)
+        // benchmarking (RFC 2544)
+        expect(await isPrivateUrl("http://198.18.0.1/")).toBe(true)
+        expect(await isPrivateUrl("http://198.19.255.255/")).toBe(true)
+        // multicast + reserved (RFC 1112 / RFC 6890), incl. broadcast
+        expect(await isPrivateUrl("http://224.0.0.1/")).toBe(true)
+        expect(await isPrivateUrl("http://239.255.255.255/")).toBe(true)
+        expect(await isPrivateUrl("http://240.0.0.1/")).toBe(true)
+        expect(await isPrivateUrl("http://255.255.255.255/")).toBe(true)
+        expect(lookupMock).not.toHaveBeenCalled()
+    })
+
+    it("keeps public neighbours of the reserved ranges allowed", async () => {
+        // Public literals fall through the fast path to DNS, which returns the
+        // literal itself; stub that so the test stays offline.
+        const resolvesTo = (ip: string) =>
+            lookupMock.mockResolvedValue([{ address: ip, family: 4 }])
+
+        resolvesTo("198.17.255.255")
+        expect(await isPrivateUrl("http://198.17.255.255/")).toBe(false)
+        resolvesTo("198.20.0.1")
+        expect(await isPrivateUrl("http://198.20.0.1/")).toBe(false)
+        resolvesTo("192.0.3.1")
+        expect(await isPrivateUrl("http://192.0.3.1/")).toBe(false)
+        resolvesTo("223.255.255.255")
+        expect(await isPrivateUrl("http://223.255.255.255/")).toBe(false)
+    })
+
     it("treats CGNAT boundaries correctly", async () => {
         // 100.63.x and 100.128.x are outside 100.64.0.0/10 → public
         lookupMock.mockResolvedValue([{ address: "100.63.255.255", family: 4 }])

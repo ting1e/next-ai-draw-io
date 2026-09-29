@@ -34,14 +34,20 @@ function isPrivateIp(ip: string): boolean {
     // IPv4
     const ipv4Match = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
     if (ipv4Match) {
-        const [, a, b] = ipv4Match.map(Number)
+        const [, a, b, c] = ipv4Match.map(Number)
         if (a === 10) return true // 10.0.0.0/8
         if (a === 172 && b >= 16 && b <= 31) return true // 172.16.0.0/12
         if (a === 192 && b === 168) return true // 192.168.0.0/16
-        if (a === 169 && b === 254) return true // 169.254.0.0/16 (link-local)
+        if (a === 169 && b === 254) return true // 169.254.0.0/16 (link-local / cloud metadata)
         if (a === 127) return true // 127.0.0.0/8 (loopback)
-        if (a === 0) return true // 0.0.0.0/8
+        if (a === 0) return true // 0.0.0.0/8 ("this network")
         if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10 (CGNAT, used by some cloud internal networks)
+        if (a === 192 && b === 0 && c === 0) return true // 192.0.0.0/24 (IETF protocol assignments)
+        if (a === 192 && b === 0 && c === 2) return true // 192.0.2.0/24 (TEST-NET-1)
+        if (a === 198 && (b === 18 || b === 19)) return true // 198.18.0.0/15 (benchmarking)
+        if (a === 198 && b === 51 && c === 100) return true // 198.51.100.0/24 (TEST-NET-2)
+        if (a === 203 && b === 0 && c === 113) return true // 203.0.113.0/24 (TEST-NET-3)
+        if (a >= 224) return true // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved (incl. 255.255.255.255)
     }
 
     return false
@@ -89,6 +95,10 @@ function isPrivateHostname(hostname: string): boolean {
  * Resolves the hostname via DNS and validates every returned address, so
  * public-looking names that map to internal IPs (e.g. "127-0-0-1.sslip.io")
  * are caught even though they pass the string-only check.
+ *
+ * Limitations: callers must also disable automatic redirect following (or
+ * re-check every hop) and should be aware that the DNS resolution here and the
+ * later connection are separate lookups, so a rebinding TOCTOU window remains.
  */
 export async function isPrivateUrl(urlString: string): Promise<boolean> {
     try {
