@@ -1,6 +1,6 @@
 import { GoogleAnalytics } from "@next/third-parties/google"
 import type { Metadata, Viewport } from "next"
-import { JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google"
+import localFont from "next/font/local"
 import { notFound } from "next/navigation"
 import { DiagramProvider } from "@/contexts/diagram-context"
 import { DictionaryProvider } from "@/hooks/use-dictionary"
@@ -10,16 +10,23 @@ import { getDictionary, hasLocale } from "@/lib/i18n/dictionaries"
 
 import "../globals.css"
 
-const plusJakarta = Plus_Jakarta_Sans({
+// Fonts are vendored under public/fonts (variable WOFF2, latin subset) instead
+// of loaded from next/font/google so the Docker build never has to reach
+// fonts.googleapis.com / fonts.gstatic.com. Network-restricted build
+// environments otherwise fail with "Can't resolve
+// '@vercel/turbopack-next/internal/font/google/font'" or a fetch timeout.
+const plusJakarta = localFont({
+    src: "../../public/fonts/PlusJakartaSans-VariableFont_wght.woff2",
     variable: "--font-sans",
-    subsets: ["latin"],
-    weight: ["400", "500", "600", "700"],
+    display: "swap",
+    weight: "200 800",
 })
 
-const jetbrainsMono = JetBrains_Mono({
+const jetbrainsMono = localFont({
+    src: "../../public/fonts/JetBrainsMono-VariableFont_wght.woff2",
     variable: "--font-mono",
-    subsets: ["latin"],
-    weight: ["400", "500"],
+    display: "swap",
+    weight: "100 800",
 })
 
 export const viewport: Viewport = {
