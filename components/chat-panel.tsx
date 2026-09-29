@@ -584,6 +584,13 @@ export default function ChatPanel({
     const loadedMessageIdsRef = useRef<Set<string>>(new Set())
     // Track when session was just loaded (to skip auto-save on load)
     const justLoadedSessionRef = useRef(false)
+    // Hydration gate for freshly loaded sessions: holds the XML the session
+    // was loaded with, or null when not hydrating. Draw.io fires one autosave
+    // right after loading that merely echoes the loaded XML back; that echo
+    // must not be written to the server. The first content change adopts the
+    // echo as the new baseline and ends hydration - only later changes are
+    // real user edits and resume autosave.
+    const hydrationXmlRef = useRef<string | null>(null)
 
     const syncUIWithSession = useCallback(
         (
@@ -596,6 +603,9 @@ export default function ChatPanel({
         ) => {
             const hasRealDiagram = isRealDiagram(data?.diagramXml)
             if (data) {
+                // Begin hydration: suppress autosave until Draw.io echoes the
+                // loaded XML back (its post-load autosave).
+                hydrationXmlRef.current = data.diagramXml
                 // Mark all message IDs as loaded from session
                 const messageIds = (data.messages as any[]).map(
                     (m: any) => m.id,
@@ -614,6 +624,8 @@ export default function ChatPanel({
                 }
                 setDiagramHistory(data.diagramHistory || [])
             } else {
+                // Not hydrating a blank canvas - there is nothing loaded to echo.
+                hydrationXmlRef.current = null
                 loadedMessageIdsRef.current = new Set()
                 setMessages([])
                 xmlSnapshotsRef.current.clear()
@@ -755,6 +767,22 @@ export default function ChatPanel({
             return
         }
 
+        // While a freshly loaded session is still hydrating Draw.io, do not
+        // write to the server: Draw.io fires an autosave right after loading
+        // that merely echoes the loaded XML back. Cancel any pending save,
+        // adopt the echo as the new baseline and end hydration - real user
+        // edits afterwards resume autosave. (`null` means not hydrating.)
+        if (hydrationXmlRef.current !== null) {
+            if (localStorageDebounceRef.current) {
+                clearTimeout(localStorageDebounceRef.current)
+                localStorageDebounceRef.current = null
+            }
+            if (chartXML !== hydrationXmlRef.current) {
+                hydrationXmlRef.current = chartXML
+            }
+            return
+        }
+
         // Clear any pending save
         if (localStorageDebounceRef.current) {
             clearTimeout(localStorageDebounceRef.current)
@@ -771,6 +799,9 @@ export default function ChatPanel({
         // Debounce: save after 1.2 seconds of no changes
         localStorageDebounceRef.current = setTimeout(async () => {
             try {
+                // Re-check hydration at fire time: a session may have been
+                // loaded while this save was pending.
+                if (hydrationXmlRef.current !== null) return
                 if (messages.length > 0 || hasDiagramNow) {
                     const createVersion = pendingVersionRef.current
                     // Only capture/upload a thumbnail when one is missing or
@@ -836,6 +867,9 @@ export default function ChatPanel({
         const handleVisibilityChange = async () => {
             if (
                 document.visibilityState === "hidden" &&
+                // Don't save while a freshly loaded session is still
+                // hydrating Draw.io - its post-load echo is not a user change.
+                hydrationXmlRef.current === null &&
                 (messagesRef.current.length > 0 ||
                     isRealDiagram(chartXMLRef.current))
             ) {
@@ -864,6 +898,9 @@ export default function ChatPanel({
 
     const onFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault()
+        // Sending a message is a real user action - end any pending hydration
+        // gate so the upcoming changes are persisted.
+        hydrationXmlRef.current = null
         const isProcessing = status === "streaming" || status === "submitted"
         if (input.trim() && !isProcessing) {
             // Check if input matches a cached example (only when no messages yet)
@@ -1023,6 +1060,9 @@ export default function ChatPanel({
         // (otherwise the URL update effect would restore the old session URL)
         sessionManager.clearCurrentSession()
 
+        // Nothing is loaded anymore - no hydration echo to suppress
+        hydrationXmlRef.current = null
+
         // Clear UI state (can't use syncUIWithSession here because we also need to clear files)
         setMessages([])
         setInput("")
@@ -1123,6 +1163,9 @@ export default function ChatPanel({
             onDisplayChart(xml, true)
             chartXMLRef.current = xml
             justLoadedSessionRef.current = false
+            // Restoring is a user action - end hydration so the restored
+            // state is persisted on the next autosave.
+            hydrationXmlRef.current = null
             toast.success(dict.diagrams.saved)
         },
         [onDisplayChart, dict.diagrams.saved],

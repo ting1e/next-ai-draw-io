@@ -102,9 +102,40 @@ export function useSessionManager(
 
     const pendingSaveRef = useRef<{ session: ChatSession } | null>(null)
 
+    // Refs mirroring the current session state so saves always observe the
+    // latest values without depending on React render timing.
+    const currentSessionRef = useRef<ChatSession | null>(null)
+    const currentSessionIdRef = useRef<string | null>(null)
+    // Latest known server revision for the current session. Updated
+    // immediately after every successful load/save so queued saves never
+    // PATCH against a stale revision (which would cause false 409 conflicts).
+    const revisionRef = useRef<number | undefined>(undefined)
+
+    // Single-flight save queue. Only one provider.save runs at a time; saves
+    // requested while another is in flight are coalesced into one follow-up
+    // save that uses the latest data. This prevents concurrent PATCHes that
+    // would race on `revision` and produce false 409 conflicts.
+    const activeSaveRef = useRef<Promise<SaveOutcome> | null>(null)
+    const queuedSaveRef = useRef<{
+        data: SessionData
+        targetSessionId: string | null
+        promise: Promise<SaveOutcome>
+        resolve: (outcome: SaveOutcome) => void
+    } | null>(null)
+
     const isInitializedRef = useRef(false)
     // Sequence guard for URL changes - prevents out-of-order async resolution
     const urlChangeSequenceRef = useRef(0)
+
+    // Central helper: update current-session state and all mirrors/refs in
+    // one place so the save queue can read fresh values.
+    const applyCurrentSession = useCallback((session: ChatSession | null) => {
+        currentSessionRef.current = session
+        currentSessionIdRef.current = session?.id ?? null
+        revisionRef.current = session?.revision
+        setCurrentSession(session)
+        setCurrentSessionId(session?.id ?? null)
+    }, [])
 
     // Load sessions list
     const refreshSessions = useCallback(async () => {
@@ -151,8 +182,7 @@ export function useSessionManager(
                 if (initialSessionId) {
                     const session = await provider.get(initialSessionId)
                     if (session) {
-                        setCurrentSession(session)
-                        setCurrentSessionId(session.id)
+                        applyCurrentSession(session)
                     }
                     // If session not found, stay in blank state (URL has invalid session ID)
                 }
@@ -165,7 +195,7 @@ export function useSessionManager(
         }
 
         init()
-    }, [initialSessionId, provider])
+    }, [initialSessionId, provider, applyCurrentSession])
 
     // Handle URL session ID changes after initialization
     // Note: intentionally NOT including currentSessionId in deps to avoid race conditions
@@ -192,7 +222,7 @@ export function useSessionManager(
                     // Only update if the session is different from current
                     setCurrentSessionId((current) => {
                         if (current !== session.id) {
-                            setCurrentSession(session)
+                            applyCurrentSession(session)
                             return session.id
                         }
                         return current
@@ -205,7 +235,7 @@ export function useSessionManager(
         }
 
         handleSessionIdChange()
-    }, [initialSessionId, isAvailable, provider])
+    }, [initialSessionId, isAvailable, provider, applyCurrentSession])
 
     // Refresh sessions on window focus (multi-tab sync)
     useEffect(() => {
@@ -217,15 +247,14 @@ export function useSessionManager(
     }, [refreshSessions])
 
     // Switch to a different session
+    // Note: no save happens here. The caller (e.g. handleSelectSession) is
+    // responsible for saving the current session exactly once, routed through
+    // the save queue. Saving again here would re-send the same revision while
+    // React state is still stale and trigger a false 409 conflict.
     const switchSession = useCallback(
         async (id: string): Promise<SessionData | null> => {
             if (id === currentSessionId) return null
             if (!provider) return null
-
-            // Save current session first if it has messages
-            if (currentSession && currentSession.messages.length > 0) {
-                await provider.save(currentSession)
-            }
 
             // Load the target session
             const session = await provider.get(id)
@@ -235,34 +264,32 @@ export function useSessionManager(
             }
 
             // Update state
-            setCurrentSession(session)
-            setCurrentSessionId(session.id)
+            applyCurrentSession(session)
             setSaveState("idle")
             setConflict(null)
 
             return toSessionData(session)
         },
-        [currentSessionId, currentSession, provider],
+        [currentSessionId, provider, applyCurrentSession],
     )
 
     // Delete a session
     const deleteSession = useCallback(
         async (id: string): Promise<{ wasCurrentSession: boolean }> => {
             if (!provider) return { wasCurrentSession: false }
-            const wasCurrentSession = id === currentSessionId
+            const wasCurrentSession = id === currentSessionIdRef.current
             await provider.delete(id)
 
             // If deleting current session, clear state (caller will show new empty session)
             if (wasCurrentSession) {
-                setCurrentSession(null)
-                setCurrentSessionId(null)
+                applyCurrentSession(null)
             }
 
             await refreshSessions()
 
             return { wasCurrentSession }
         },
-        [currentSessionId, provider, refreshSessions],
+        [provider, applyCurrentSession, refreshSessions],
     )
 
     const updateMetadataList = useCallback((session: ChatSession) => {
@@ -285,29 +312,27 @@ export function useSessionManager(
         )
     }, [])
 
-    // Save current session data (debounced externally by caller)
-    // forSessionId: if provided, verify save targets correct session (prevents stale debounce writes)
-    const saveCurrentSession = useCallback(
+    // Single-flight save used by every save entry point (debounced autosave,
+    // session switch, page hidden, manual/AI-edit saves). See activeSaveRef.
+    const performSave = useCallback(
         async (
             data: SessionData,
-            forSessionId?: string | null,
+            targetSessionId: string | null,
         ): Promise<SaveOutcome> => {
-            // If forSessionId is provided, verify it matches current session
-            // This prevents stale debounced saves from overwriting a newly switched session
-            if (
-                forSessionId !== undefined &&
-                forSessionId !== currentSessionId
-            ) {
-                return { ok: false, error: "failed", message: "Stale session" }
-            }
             if (!provider) {
                 return { ok: false, error: "failed", message: "Not available" }
+            }
+
+            // Drop saves whose target is no longer the current session
+            // (the user switched away while this save was queued).
+            if (targetSessionId !== currentSessionIdRef.current) {
+                return { ok: false, error: "failed", message: "Stale session" }
             }
 
             setSaveState("saving")
 
             try {
-                let session = currentSession
+                let session = currentSessionRef.current
                 let justCreated = false
 
                 if (!session) {
@@ -332,6 +357,9 @@ export function useSessionManager(
                         diagramHistory:
                             data.diagramHistory ?? existing.diagramHistory,
                         updatedAt: Date.now(),
+                        // Always PATCH against the newest known revision -
+                        // the React state copy may be stale when saves queue up.
+                        revision: revisionRef.current ?? existing.revision,
                         // Update title if it's still default and we have messages
                         title:
                             existing.title === "New Chat" &&
@@ -356,8 +384,18 @@ export function useSessionManager(
                         thumbnailDataUrl:
                             outcome.thumbnailUrl ?? session.thumbnailDataUrl,
                     }
-                    setCurrentSession(updatedSession)
-                    setCurrentSessionId(updatedSession.id)
+                    // Update the latest revision immediately (before React
+                    // state catches up) so a queued follow-up save uses it.
+                    // Only repoint the current session if this save still
+                    // belongs to it - the user may have switched away while
+                    // the save was in flight.
+                    if (
+                        justCreated
+                            ? currentSessionIdRef.current == null
+                            : currentSessionIdRef.current === session.id
+                    ) {
+                        applyCurrentSession(updatedSession)
+                    }
                     setSaveState("saved")
                     if (justCreated) {
                         await refreshSessions()
@@ -386,33 +424,137 @@ export function useSessionManager(
                 }
             }
         },
-        [
-            currentSession,
-            currentSessionId,
-            provider,
-            refreshSessions,
-            updateMetadataList,
-        ],
+        [provider, applyCurrentSession, refreshSessions, updateMetadataList],
+    )
+
+    // Save current session data. Every entry point goes through here:
+    // - At most one provider.save (PATCH) is ever in flight.
+    // - Saves requested while one is in flight are coalesced: the queued
+    //   save keeps the newest payload (version-snapshot flags are OR-ed) and
+    //   runs once, with the latest revision, after the active save settles.
+    // forSessionId: if provided, verify save targets correct session (prevents stale debounce writes)
+    const saveCurrentSession = useCallback(
+        (
+            data: SessionData,
+            forSessionId?: string | null,
+        ): Promise<SaveOutcome> => {
+            if (
+                forSessionId !== undefined &&
+                forSessionId !== currentSessionIdRef.current
+            ) {
+                return Promise.resolve({
+                    ok: false,
+                    error: "failed",
+                    message: "Stale session",
+                })
+            }
+            if (!provider) {
+                return Promise.resolve({
+                    ok: false,
+                    error: "failed",
+                    message: "Not available",
+                })
+            }
+
+            // Pin the target at enqueue time so a queued save can be
+            // dropped if the user switches sessions before it runs.
+            const targetSessionId = currentSessionIdRef.current
+
+            const startSave = (
+                payload: SessionData,
+                sessionId: string | null,
+                resolve?: (outcome: SaveOutcome) => void,
+            ): Promise<SaveOutcome> => {
+                const run = performSave(payload, sessionId)
+                    .then((outcome) => {
+                        resolve?.(outcome)
+                        return outcome
+                    })
+                    .finally(() => {
+                        if (activeSaveRef.current === run) {
+                            activeSaveRef.current = null
+                        }
+                        const next = queuedSaveRef.current
+                        if (next) {
+                            queuedSaveRef.current = null
+                            startSave(
+                                next.data,
+                                next.targetSessionId,
+                                next.resolve,
+                            )
+                        }
+                    })
+                activeSaveRef.current = run
+                return run
+            }
+
+            if (activeSaveRef.current) {
+                const queued = queuedSaveRef.current
+                if (queued && queued.targetSessionId === targetSessionId) {
+                    // Coalesce into the pending save: newest content wins,
+                    // version snapshots survive either request.
+                    queuedSaveRef.current = {
+                        ...queued,
+                        data: {
+                            ...data,
+                            createVersion:
+                                data.createVersion || queued.data.createVersion,
+                            versionLabel:
+                                data.versionLabel ?? queued.data.versionLabel,
+                        },
+                    }
+                    return queued.promise
+                }
+                if (queued) {
+                    // Pending save targets a session that is no longer
+                    // current - replace it and resolve its waiters as stale.
+                    queued.resolve({
+                        ok: false,
+                        error: "failed",
+                        message: "Stale session",
+                    })
+                }
+                let resolve!: (outcome: SaveOutcome) => void
+                const promise = new Promise<SaveOutcome>((r) => {
+                    resolve = r
+                })
+                queuedSaveRef.current = {
+                    data,
+                    targetSessionId,
+                    promise,
+                    resolve,
+                }
+                return promise
+            }
+
+            return startSave(data, targetSessionId)
+        },
+        [provider, performSave],
     )
 
     // Clear current session state (for starting fresh without loading another session)
     const clearCurrentSession = useCallback(() => {
-        setCurrentSession(null)
-        setCurrentSessionId(null)
+        applyCurrentSession(null)
         setConflict(null)
         setSaveState("idle")
-    }, [])
+    }, [applyCurrentSession])
 
     const renameSession = useCallback(
         async (id: string, title: string) => {
             if (!provider) return
             await provider.rename(id, title)
-            if (id === currentSessionId && currentSession) {
-                setCurrentSession({ ...currentSession, title })
+            if (
+                id === currentSessionIdRef.current &&
+                currentSessionRef.current
+            ) {
+                applyCurrentSession({
+                    ...currentSessionRef.current,
+                    title,
+                })
             }
             await refreshSessions()
         },
-        [provider, currentSessionId, currentSession, refreshSessions],
+        [provider, applyCurrentSession, refreshSessions],
     )
 
     const duplicateSession = useCallback(
@@ -429,13 +571,12 @@ export function useSessionManager(
         const serverSession = conflict?.serverSession
         if (!serverSession) return null
         pendingSaveRef.current = null
-        setCurrentSession(serverSession)
-        setCurrentSessionId(serverSession.id)
+        applyCurrentSession(serverSession)
         setConflict(null)
         setSaveState("idle")
         await refreshSessions()
         return toSessionData(serverSession)
-    }, [conflict, refreshSessions])
+    }, [conflict, applyCurrentSession, refreshSessions])
 
     const resolveConflictSaveCopy = useCallback(async () => {
         const pending = pendingSaveRef.current
@@ -448,13 +589,12 @@ export function useSessionManager(
             thumbnailDataUrl: pending.session.thumbnailDataUrl,
         })
         pendingSaveRef.current = null
-        setCurrentSession(copy)
-        setCurrentSessionId(copy.id)
+        applyCurrentSession(copy)
         setConflict(null)
         setSaveState("saved")
         await refreshSessions()
         return toSessionData(copy)
-    }, [provider, refreshSessions])
+    }, [provider, applyCurrentSession, refreshSessions])
 
     return {
         sessions,
