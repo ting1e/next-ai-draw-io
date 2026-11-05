@@ -5,11 +5,11 @@ test.describe("Smoke Tests", () => {
         const errors: string[] = []
         page.on("pageerror", (err) => errors.push(err.message))
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await expect(page).toHaveTitle(/Draw\.io/i, { timeout: 10000 })
 
         const iframe = getIframe(page)
-        await expect(iframe).toBeVisible({ timeout: 30000 })
+        await expect(iframe).toBeVisible({ timeout: 60000 })
 
         expect(errors).toEqual([])
     })
@@ -18,18 +18,18 @@ test.describe("Smoke Tests", () => {
         const errors: string[] = []
         page.on("pageerror", (err) => errors.push(err.message))
 
-        await page.goto("/ja", { waitUntil: "networkidle" })
+        await page.goto("/ja", { waitUntil: "domcontentloaded" })
         await expect(page).toHaveTitle(/Draw\.io/i, { timeout: 10000 })
 
         const iframe = getIframe(page)
-        await expect(iframe).toBeVisible({ timeout: 30000 })
+        await expect(iframe).toBeVisible({ timeout: 60000 })
 
         expect(errors).toEqual([])
     })
 
     test("settings dialog opens", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
     })

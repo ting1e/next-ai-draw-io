@@ -2,8 +2,8 @@ import { expect, getIframe, openSettings, sleep, test } from "./lib/fixtures"
 
 test.describe("Theme Switching", () => {
     test("can toggle app dark mode", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
 
@@ -28,8 +28,8 @@ test.describe("Theme Switching", () => {
     })
 
     test("theme persists after page reload", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
 
@@ -48,10 +48,10 @@ test.describe("Theme Switching", () => {
             })
 
             await test.step("reload page", async () => {
-                await page.reload({ waitUntil: "networkidle" })
+                await page.reload({ waitUntil: "domcontentloaded" })
                 await getIframe(page).waitFor({
                     state: "visible",
-                    timeout: 30000,
+                    timeout: 60000,
                 })
             })
 
@@ -65,8 +65,8 @@ test.describe("Theme Switching", () => {
     })
 
     test("draw.io theme toggle exists", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
 
@@ -78,8 +78,8 @@ test.describe("Theme Switching", () => {
     test("system theme preference is respected", async ({ page }) => {
         await page.emulateMedia({ colorScheme: "dark" })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const html = page.locator("html")
         const classes = await html.getAttribute("class")

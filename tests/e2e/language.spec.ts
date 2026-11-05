@@ -9,8 +9,8 @@ import {
 
 test.describe("Language Switching", () => {
     test("loads English by default", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -19,8 +19,8 @@ test.describe("Language Switching", () => {
     })
 
     test("can switch to Japanese", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await test.step("open settings and select Japanese", async () => {
             await openSettings(page)
@@ -37,8 +37,8 @@ test.describe("Language Switching", () => {
     })
 
     test("can switch to Chinese", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await test.step("open settings and select Chinese", async () => {
             await openSettings(page)
@@ -55,8 +55,8 @@ test.describe("Language Switching", () => {
     })
 
     test("language persists after reload", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await test.step("switch to Japanese", async () => {
             await openSettings(page)
@@ -74,8 +74,8 @@ test.describe("Language Switching", () => {
         })
 
         await test.step("reload and verify Japanese persists", async () => {
-            await page.reload({ waitUntil: "networkidle" })
-            await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+            await page.reload({ waitUntil: "domcontentloaded" })
+            await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
             // Wait for hydration and localStorage to be read
             await sleep(1000)
             await expect(page.locator('button:has-text("送信")')).toBeVisible({
@@ -85,8 +85,8 @@ test.describe("Language Switching", () => {
     })
 
     test("Japanese locale URL works", async ({ page }) => {
-        await page.goto("/ja", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/ja", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await expect(page.locator('button:has-text("送信")')).toBeVisible({
             timeout: 10000,
@@ -94,8 +94,8 @@ test.describe("Language Switching", () => {
     })
 
     test("Chinese locale URL works", async ({ page }) => {
-        await page.goto("/zh", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/zh", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await expect(page.locator('button:has-text("发送")')).toBeVisible({
             timeout: 10000,

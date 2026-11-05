@@ -2,8 +2,8 @@ import { expect, getIframe, openSettings, test } from "./lib/fixtures"
 
 test.describe("Settings", () => {
     test.beforeEach(async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("settings dialog opens", async ({ page }) => {

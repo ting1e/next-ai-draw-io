@@ -158,6 +158,9 @@
     "overrides": {
         "@openrouter/ai-sdk-provider": {
             "ai": "^6.0.1"
+        },
+        "@node-minify/core": {
+            "glob": "^10.5.0"
         }
     }
 }

@@ -2,6 +2,8 @@ import { defineConfig } from "@playwright/test"
 
 export default defineConfig({
     testDir: "./tests/e2e",
+    // The real embed loads a large editor bundle; allow slow first paints.
+    timeout: 120_000,
     fullyParallel: true,
     forbidOnly: !!process.env.CI,
     retries: process.env.CI ? 2 : 0,
@@ -18,6 +20,10 @@ export default defineConfig({
             ? "http://localhost:6001"
             : "http://localhost:6002",
         trace: "on-first-retry",
+        // embed.diagrams.net rejects the default HeadlessChrome user agent
+        // with HTTP 403, which leaves the editor iframe permanently hidden.
+        userAgent:
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
     },
     projects: [
         {

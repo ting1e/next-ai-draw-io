@@ -2,8 +2,8 @@ import { expect, getIframe, test } from "./lib/fixtures"
 
 test.describe("File Upload Area", () => {
     test.beforeEach(async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("page loads without console errors", async ({ page }) => {

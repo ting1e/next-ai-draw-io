@@ -18,6 +18,7 @@ const isCI = Boolean(process.env.CI)
  */
 export default defineConfig({
     testDir: "./tests/e2e-server",
+    timeout: 60_000,
     outputDir: "test-results/server",
     fullyParallel: false,
     workers: 1,
@@ -41,6 +42,10 @@ export default defineConfig({
     use: {
         baseURL,
         trace: "on-first-retry",
+        // Rejecting HeadlessChrome is an embed.diagrams.net policy; use a
+        // regular Chrome UA so the editor iframe can actually load in CI.
+        userAgent:
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
     },
     projects: [
         {

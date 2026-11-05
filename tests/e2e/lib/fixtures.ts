@@ -14,10 +14,10 @@ export const test = base.extend<{
     appPage: Page
 }>({
     appPage: async ({ page }, use) => {
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
         await use(page)
     },
 })
@@ -197,8 +197,8 @@ export async function expectBeforeAndAfterReload(
     assertion: () => Promise<void>,
 ) {
     await test.step(`verify ${description} before reload`, assertion)
-    await page.reload({ waitUntil: "networkidle" })
-    await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+    await page.reload({ waitUntil: "domcontentloaded" })
+    await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
     await test.step(`verify ${description} after reload`, assertion)
 }
 

@@ -2,8 +2,8 @@ import { expect, getIframe, test } from "./lib/fixtures"
 
 test.describe("History Dialog", () => {
     test.beforeEach(async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("history button exists in UI", async ({ page }) => {

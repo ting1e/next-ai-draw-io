@@ -25,8 +25,8 @@ test.describe("History and Session Restore", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await test.step("create a conversation", async () => {
             await sendMessage(page, "Create a test diagram")
@@ -49,8 +49,8 @@ test.describe("History and Session Restore", () => {
     })
 
     test("chat history sidebar shows past conversations", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const historyButton = page.locator(
             'button[aria-label*="History"]:not([disabled]), button:has(svg.lucide-history):not([disabled]), button:has(svg.lucide-menu):not([disabled]), button:has(svg.lucide-sidebar):not([disabled]), button:has(svg.lucide-panel-left):not([disabled])',
@@ -78,8 +78,8 @@ test.describe("History and Session Restore", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await test.step("create conversation", async () => {
             await sendMessage(page, "Create persistent diagram")
@@ -96,8 +96,8 @@ test.describe("History and Session Restore", () => {
         // Note: After reload, mocked responses won't persist since we're not
         // testing with real localStorage. We just verify the app loads correctly.
         await test.step("verify app loads after reload", async () => {
-            await page.reload({ waitUntil: "networkidle" })
-            await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+            await page.reload({ waitUntil: "domcontentloaded" })
+            await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
             await expect(getChatInput(page)).toBeVisible({ timeout: 10000 })
         })
     })
@@ -114,21 +114,21 @@ test.describe("History and Session Restore", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await sendMessage(page, "Create saveable diagram")
         await waitForComplete(page)
 
-        await page.reload({ waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.reload({ waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const frame = getIframeContent(page)
         await expect(
             frame
                 .locator(".geMenubarContainer, .geDiagramContainer, canvas")
                 .first(),
-        ).toBeVisible({ timeout: 30000 })
+        ).toBeVisible({ timeout: 60000 })
     })
 
     test("can restore from browser back/forward", async ({ page }) => {
@@ -143,35 +143,35 @@ test.describe("History and Session Restore", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await sendMessage(page, "Test navigation")
         await waitForText(page, "Testing browser navigation.")
 
-        await page.goto("/about", { waitUntil: "networkidle" })
-        await page.goBack({ waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/about", { waitUntil: "domcontentloaded" })
+        await page.goBack({ waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await expect(getChatInput(page)).toBeVisible({ timeout: 10000 })
     })
 
     test("settings are restored after reload", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
         await page.keyboard.press("Escape")
 
-        await page.reload({ waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.reload({ waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await openSettings(page)
     })
 
     test("model selection persists", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const modelSelector = page.locator(
             'button[aria-label*="Model"], [data-testid="model-selector"], button:has-text("Claude")',
@@ -185,16 +185,16 @@ test.describe("History and Session Restore", () => {
 
         const initialModel = await modelSelector.first().textContent()
 
-        await page.reload({ waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.reload({ waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const modelAfterReload = await modelSelector.first().textContent()
         expect(modelAfterReload).toBe(initialModel)
     })
 
     test("handles localStorage quota exceeded gracefully", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await page.evaluate(() => {
             try {

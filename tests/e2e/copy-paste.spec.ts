@@ -10,8 +10,8 @@ import { createMockSSEResponse } from "./lib/helpers"
 
 test.describe("Copy/Paste Functionality", () => {
     test("can paste text into chat input", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -23,8 +23,8 @@ test.describe("Copy/Paste Functionality", () => {
     })
 
     test("can paste multiline text into chat input", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -48,8 +48,8 @@ test.describe("Copy/Paste Functionality", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await sendMessage(page, "Create a test box")
 
@@ -77,8 +77,8 @@ test.describe("Copy/Paste Functionality", () => {
     })
 
     test("keyboard shortcuts work in chat input", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -91,8 +91,8 @@ test.describe("Copy/Paste Functionality", () => {
     })
 
     test("can undo/redo in chat input", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -109,8 +109,8 @@ test.describe("Copy/Paste Functionality", () => {
     })
 
     test("chat input handles special characters", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })
@@ -122,8 +122,8 @@ test.describe("Copy/Paste Functionality", () => {
     })
 
     test("long text in chat input scrolls", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatInput = getChatInput(page)
         await expect(chatInput).toBeVisible({ timeout: 10000 })

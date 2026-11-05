@@ -26,10 +26,10 @@ test.describe("Multi-turn Conversation", () => {
             ]),
         )
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
 
         // First request
         await sendMessage(page, "Draw first box")
@@ -63,10 +63,10 @@ test.describe("Multi-turn Conversation", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
 
         // First message
         await sendMessage(page, "Hello")
@@ -93,10 +93,10 @@ test.describe("Multi-turn Conversation", () => {
             ]),
         )
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
 
         // Ask for explanation first
         await sendMessage(page, "Explain the architecture")

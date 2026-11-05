@@ -11,10 +11,10 @@ import { createMockSSEResponse } from "./lib/helpers"
 
 test.describe("Iframe Interaction", () => {
     test("draw.io iframe loads successfully", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
 
         const iframe = getIframe(page)
-        await expect(iframe).toBeVisible({ timeout: 30000 })
+        await expect(iframe).toBeVisible({ timeout: 60000 })
 
         // iframe should have loaded draw.io content
         const frame = getIframeContent(page)
@@ -22,12 +22,12 @@ test.describe("Iframe Interaction", () => {
             frame
                 .locator(".geMenubarContainer, .geDiagramContainer, canvas")
                 .first(),
-        ).toBeVisible({ timeout: 30000 })
+        ).toBeVisible({ timeout: 60000 })
     })
 
     test("can interact with draw.io toolbar", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const frame = getIframeContent(page)
 
@@ -38,7 +38,7 @@ test.describe("Iframe Interaction", () => {
                 .or(frame.locator('[title*="Diagram"]'))
                 .filter({ visible: true })
                 .first(),
-        ).toBeVisible({ timeout: 30000 })
+        ).toBeVisible({ timeout: 60000 })
     })
 
     test("diagram XML is rendered in iframe after generation", async ({
@@ -55,8 +55,8 @@ test.describe("Iframe Interaction", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         await sendMessage(page, "Create a test node")
         await waitForComplete(page)
@@ -66,8 +66,8 @@ test.describe("Iframe Interaction", () => {
     })
 
     test("zoom controls work in draw.io", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const frame = getIframeContent(page)
 
@@ -78,8 +78,8 @@ test.describe("Iframe Interaction", () => {
     })
 
     test("can resize the panel divider", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         // Find the resizer/divider between panels
         const resizer = page.locator(
@@ -103,8 +103,8 @@ test.describe("Iframe Interaction", () => {
     })
 
     test("iframe responds to window resize", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const iframe = getIframe(page)
         const initialBox = await iframe.boundingBox()

@@ -156,6 +156,12 @@ export default function ChatPanel({
     const urlSessionId = searchParams.get("session")
 
     const onFetchChart = (saveToHistory = true) => {
+        // There is nothing to export on a blank canvas. Draw.io does not
+        // answer export requests for an empty diagram, so waiting for the
+        // timeout here would drop the user's message.
+        if (!isRealDiagram(chartXMLRef.current)) {
+            return Promise.resolve(chartXMLRef.current || "")
+        }
         return Promise.race([
             new Promise<string>((resolve) => {
                 resolverRef.current = resolve
@@ -1019,10 +1025,19 @@ export default function ChatPanel({
                 }
             }
 
+            let chartXml: string
             try {
-                let chartXml = await onFetchChart()
-                chartXml = formatXML(chartXml)
+                chartXml = await onFetchChart()
+            } catch (error) {
+                // The editor may be temporarily unable to export (for
+                // example while its iframe is reloading). Fall back to the
+                // last known XML instead of silently dropping the message.
+                console.error("Error fetching chart data:", error)
+                chartXml = chartXMLRef.current || ""
+            }
+            chartXml = formatXML(chartXml)
 
+            try {
                 // Build user text by concatenating input with pre-extracted text
                 // (Backend only reads first text part, so we must combine them)
                 const parts: any[] = []
@@ -1058,7 +1073,7 @@ export default function ChatPanel({
                 setFiles([])
                 setUrlData(new Map())
             } catch (error) {
-                console.error("Error fetching chart data:", error)
+                console.error("Error sending chat message:", error)
             }
         }
     }

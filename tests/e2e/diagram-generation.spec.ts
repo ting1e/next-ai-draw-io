@@ -27,10 +27,10 @@ test.describe("Diagram Generation", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("generates and displays a diagram", async ({ page }) => {
@@ -79,10 +79,10 @@ test.describe("Diagram Edit", () => {
             ]),
         )
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("can edit an existing diagram", async ({ page }) => {
@@ -110,10 +110,10 @@ test.describe("Diagram Append", () => {
             ]),
         )
 
-        await page.goto("/", { waitUntil: "networkidle" })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
         await page
             .locator("iframe")
-            .waitFor({ state: "visible", timeout: 30000 })
+            .waitFor({ state: "visible", timeout: 60000 })
     })
 
     test("can append to an existing diagram", async ({ page }) => {

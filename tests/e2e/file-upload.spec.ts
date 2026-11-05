@@ -10,8 +10,8 @@ import { createMockSSEResponse } from "./lib/helpers"
 
 test.describe("File Upload", () => {
     test("upload button opens file picker", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const uploadButton = page.locator(
             'button[aria-label="Upload file"], button:has(svg.lucide-image)',
@@ -21,8 +21,8 @@ test.describe("File Upload", () => {
     })
 
     test("shows file preview after selecting image", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const fileInput = page.locator('input[type="file"]')
 
@@ -41,8 +41,8 @@ test.describe("File Upload", () => {
     })
 
     test("can remove uploaded file", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const fileInput = page.locator('input[type="file"]')
 
@@ -88,8 +88,8 @@ test.describe("File Upload", () => {
             })
         })
 
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const fileInput = page.locator('input[type="file"]')
 
@@ -112,8 +112,8 @@ test.describe("File Upload", () => {
     })
 
     test("shows error for oversized file", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const fileInput = page.locator('input[type="file"]')
         const largeBuffer = Buffer.alloc(3 * 1024 * 1024, "x")
@@ -130,8 +130,8 @@ test.describe("File Upload", () => {
     })
 
     test("drag and drop file upload works", async ({ page }) => {
-        await page.goto("/", { waitUntil: "networkidle" })
-        await getIframe(page).waitFor({ state: "visible", timeout: 30000 })
+        await page.goto("/", { waitUntil: "domcontentloaded" })
+        await getIframe(page).waitFor({ state: "visible", timeout: 60000 })
 
         const chatForm = page.locator("form").first()
 

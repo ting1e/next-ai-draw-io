@@ -119,7 +119,12 @@ async function runBrowserXssCheck(cookie) {
         }
 
         const browser = await chromium.launch()
-        const context = await browser.newContext()
+        // embed.diagrams.net returns 403 to the default HeadlessChrome UA.
+        // Use a regular Chrome UA so the editor iframe loads during the check.
+        const context = await browser.newContext({
+            userAgent:
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        })
         await context.addInitScript(() => {
             window.__xss = 0
         })

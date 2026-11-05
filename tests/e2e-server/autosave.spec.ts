@@ -82,7 +82,7 @@ async function emitDrawioEvent(
 }
 
 async function openSession(page: Page, id: string) {
-    await page.goto(`/en?session=${id}`, { waitUntil: "networkidle" })
+    await page.goto(`/en?session=${id}`, { waitUntil: "domcontentloaded" })
     await expect(page.getByTestId("versions-button")).toBeVisible({
         timeout: 30_000,
     })
@@ -138,7 +138,7 @@ test.describe("server-storage autosave", () => {
             )
             .toContain("Manual edit persisted")
 
-        await page.reload({ waitUntil: "networkidle" })
+        await page.reload({ waitUntil: "domcontentloaded" })
         await expect(page.getByTestId("versions-button")).toBeVisible({
             timeout: 30_000,
         })
