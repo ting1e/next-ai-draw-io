@@ -50,6 +50,12 @@ export interface UseSessionManagerReturn {
     ) => Promise<SaveOutcome>
     refreshSessions: () => Promise<void>
     clearCurrentSession: () => void
+    /**
+     * Adopt the revision returned by a server-side version restore. Without
+     * this the next autosave PATCHes against the pre-restore revision and the
+     * server rejects it with a false 409 conflict.
+     */
+    applyRestoredVersion: (diagramXml: string, revision: number) => void
     renameSession: (id: string, title: string) => Promise<void>
     duplicateSession: (id: string) => Promise<ChatSession | null>
     resolveConflictReload: () => Promise<SessionData | null>
@@ -122,6 +128,10 @@ export function useSessionManager(
         promise: Promise<SaveOutcome>
         resolve: (outcome: SaveOutcome) => void
     } | null>(null)
+    // Set when the active save created a brand-new session. Saves queued while
+    // that creation was in flight still target `null`, so they must be rebound
+    // to the new ID once creation finishes instead of being dropped as stale.
+    const createdSessionIdRef = useRef<string | null>(null)
 
     const isInitializedRef = useRef(false)
     // Sequence guard for URL changes - prevents out-of-order async resolution
@@ -345,6 +355,7 @@ export function useSessionManager(
                         thumbnailDataUrl: data.thumbnailDataUrl,
                     })
                     justCreated = true
+                    createdSessionIdRef.current = session.id
                 } else {
                     const existing = session
                     session = {
@@ -477,9 +488,20 @@ export function useSessionManager(
                         const next = queuedSaveRef.current
                         if (next) {
                             queuedSaveRef.current = null
+                            // A save queued during the initial create was
+                            // pinned to `null`. Now that the session exists,
+                            // bind it to that session so it is not discarded
+                            // as stale and the last edit is persisted.
+                            const nextTargetSessionId =
+                                next.targetSessionId === null &&
+                                createdSessionIdRef.current !== null &&
+                                currentSessionIdRef.current ===
+                                    createdSessionIdRef.current
+                                    ? createdSessionIdRef.current
+                                    : next.targetSessionId
                             startSave(
                                 next.data,
-                                next.targetSessionId,
+                                nextTargetSessionId,
                                 next.resolve,
                             )
                         }
@@ -538,6 +560,23 @@ export function useSessionManager(
         setConflict(null)
         setSaveState("idle")
     }, [applyCurrentSession])
+
+    // A version restore bypasses the save queue (the dialog POSTs directly),
+    // so mirror the authoritative XML/revision it returns before the next
+    // autosave runs.
+    const applyRestoredVersion = useCallback(
+        (diagramXml: string, revision: number) => {
+            const current = currentSessionRef.current
+            if (!current) return
+            applyCurrentSession({
+                ...current,
+                diagramXml,
+                revision,
+                updatedAt: Date.now(),
+            })
+        },
+        [applyCurrentSession],
+    )
 
     const renameSession = useCallback(
         async (id: string, title: string) => {
@@ -610,6 +649,7 @@ export function useSessionManager(
         saveCurrentSession,
         refreshSessions,
         clearCurrentSession,
+        applyRestoredVersion,
         renameSession,
         duplicateSession,
         resolveConflictReload,

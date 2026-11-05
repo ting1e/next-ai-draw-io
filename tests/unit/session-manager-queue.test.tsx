@@ -432,6 +432,117 @@ describe("useSessionManager save queue", () => {
         expect(server.createdXml()).toBe("B")
     })
 
+    it("rebinds a save queued while the initial session is being created", async () => {
+        let resolveCreate!: (session: ChatSession) => void
+        const createPromise = new Promise<ChatSession>((resolve) => {
+            resolveCreate = resolve
+        })
+        const createCalls: string[] = []
+        const saveCalls: { diagramXml: string; revision?: number }[] = []
+        let resolveSave!: (outcome: SaveOutcome) => void
+        const savePromise = new Promise<SaveOutcome>((resolve) => {
+            resolveSave = resolve
+        })
+
+        const provider: SessionStorageProvider = {
+            kind: "server",
+            isAvailable: () => true,
+            list: async () => [],
+            get: async () => null,
+            create: async (input) => {
+                createCalls.push(input?.diagramXml ?? "")
+                return createPromise
+            },
+            save: async (s) => {
+                saveCalls.push({
+                    diagramXml: s.diagramXml,
+                    revision: s.revision,
+                })
+                return savePromise
+            },
+            delete: async () => {},
+            rename: async () => {},
+            duplicate: async () => null,
+        }
+
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: null, provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let first!: Promise<SaveOutcome>
+        let second!: Promise<SaveOutcome>
+        act(() => {
+            first = result.current.saveCurrentSession(DATA_A)
+            // The session ID does not exist yet, so this save is pinned to null.
+            second = result.current.saveCurrentSession(DATA_B)
+        })
+        expect(createCalls).toEqual(["A"])
+
+        await act(async () => {
+            resolveCreate(
+                session({
+                    id: "new-1",
+                    revision: 1,
+                    diagramXml: "A",
+                    messages: [],
+                }),
+            )
+        })
+        await first
+
+        // The queued save must follow the newly created session and carry the
+        // newest payload instead of being dropped as a stale save.
+        await waitFor(() => expect(saveCalls).toHaveLength(1))
+        expect(saveCalls[0]).toMatchObject({
+            diagramXml: "B",
+            revision: 1,
+        })
+
+        await act(async () => {
+            resolveSave({ ok: true, revision: 2, updatedAt: 20 })
+        })
+        const outcome = await second
+        expect(outcome).toMatchObject({ ok: true, revision: 2 })
+        expect(result.current.currentSessionId).toBe("new-1")
+        expect(result.current.currentSession?.diagramXml).toBe("B")
+    })
+
+    it("applies the server revision returned by a version restore", async () => {
+        const { provider, saveCalls, gates } = makeProvider()
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: "d1", provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+        expect(result.current.currentSession?.revision).toBe(3)
+
+        act(() => {
+            result.current.applyRestoredVersion("RESTORED", 6)
+        })
+        expect(result.current.currentSession?.revision).toBe(6)
+        expect(result.current.currentSession?.diagramXml).toBe("RESTORED")
+
+        let save!: Promise<SaveOutcome>
+        act(() => {
+            save = result.current.saveCurrentSession({
+                messages: [],
+                xmlSnapshots: [],
+                diagramXml: "EDITED",
+            })
+        })
+
+        // The next autosave uses the restored revision, not the stale one.
+        expect(saveCalls[0]).toMatchObject({
+            revision: 6,
+            diagramXml: "EDITED",
+        })
+        await act(async () => {
+            gates[0].resolve({ ok: true, revision: 7, updatedAt: 30 })
+        })
+        await save
+        expect(result.current.currentSession?.revision).toBe(7)
+    })
+
     it("reports a failed save without clearing the session, then succeeds on retry", async () => {
         let attempts = 0
         const provider: SessionStorageProvider = {

@@ -42,6 +42,14 @@ interface DiagramContextType {
 
 const DiagramContext = createContext<DiagramContextType | undefined>(undefined)
 
+function isSvgExportData(data: string | undefined): data is string {
+    return (
+        !!data &&
+        (data.startsWith("data:image/svg+xml") ||
+            data.trimStart().startsWith("<svg"))
+    )
+}
+
 export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const [chartXML, setChartXML] = useState<string>("")
     const [latestSvg, setLatestSvg] = useState<string>("")
@@ -53,6 +61,9 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const hasCalledOnLoadRef = useRef(false)
     const drawioRef = useRef<DrawIoEmbedRef | null>(null)
     const resolverRef = useRef<((value: string) => void) | null>(null)
+    // Resolver for thumbnail/SVG exports. Kept separate from resolverRef,
+    // which resolves to the extracted diagram XML used by edit_diagram.
+    const svgResolverRef = useRef<((value: string) => void) | null>(null)
     // Resolver for PNG export (used for VLM validation)
     const pngResolverRef = useRef<((value: string) => void) | null>(null)
     // Track if we're expecting an export for history (user-initiated)
@@ -110,21 +121,24 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const getThumbnailSvg = async (): Promise<string | null> => {
         if (!drawioRef.current) return null
         // Don't export if diagram is empty
-        if (!isRealDiagram(chartXML)) return null
+        if (!isRealDiagram(chartXMLRef.current)) return null
 
         try {
             const svgData = await Promise.race([
                 new Promise<string>((resolve) => {
-                    resolverRef.current = resolve
+                    svgResolverRef.current = resolve
                     drawioRef.current?.exportDiagram({ format: "xmlsvg" })
                 }),
                 new Promise<string>((_, reject) =>
-                    setTimeout(() => reject(new Error("Export timeout")), 3000),
+                    setTimeout(() => {
+                        svgResolverRef.current = null
+                        reject(new Error("Export timeout"))
+                    }, 3000),
                 ),
             ])
 
             // Update latestSvg so it's available for future saves
-            if (svgData?.includes("<svg")) {
+            if (isSvgExportData(svgData)) {
                 setLatestSvg(svgData)
                 return svgData
             }
@@ -223,6 +237,14 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             if (format === "png" || format === "svg" || format === "xmlsvg") {
                 return
             }
+        }
+
+        // Handle SVG/thumbnail export. This must run before extractDiagramXML:
+        // the resolver wants the raw SVG data URL, not the decoded diagram XML.
+        if (svgResolverRef.current && isSvgExportData(data.data)) {
+            svgResolverRef.current(data.data)
+            svgResolverRef.current = null
+            return
         }
 
         // Don't write chartXML here: exports don't change the diagram, and

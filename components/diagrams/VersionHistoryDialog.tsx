@@ -29,7 +29,7 @@ interface VersionHistoryDialogProps {
     open: boolean
     onOpenChange: (open: boolean) => void
     diagramId: string | null
-    onRestore: (xml: string) => void
+    onRestore: (xml: string, revision: number) => void
     onSaveVersion?: () => Promise<void>
 }
 
@@ -85,8 +85,11 @@ export function VersionHistoryDialog({
                 { method: "POST" },
             )
             if (!response.ok) throw new Error("Failed to restore version")
-            const data = (await response.json()) as { diagramXml: string }
-            onRestore(data.diagramXml)
+            const data = (await response.json()) as {
+                diagramXml: string
+                revision: number
+            }
+            onRestore(data.diagramXml, data.revision)
             toast.success(
                 formatMessage(dict.diagrams.restoreTitle, {
                     version: revision,
@@ -138,6 +141,7 @@ export function VersionHistoryDialog({
                         {versions.map((version) => (
                             <div
                                 key={version.revision}
+                                data-testid={`version-${version.revision}`}
                                 className={`border rounded-md p-2 cursor-pointer hover:border-primary transition-colors ${
                                     selected === version.revision
                                         ? "border-primary ring-2 ring-primary"
@@ -199,6 +203,7 @@ export function VersionHistoryDialog({
                                 {dict.common.cancel}
                             </Button>
                             <Button
+                                data-testid="restore-version-button"
                                 onClick={() => handleRestore(selected)}
                                 disabled={restoring !== null}
                             >

@@ -1,6 +1,34 @@
 "use client"
 
 const MAX_THUMBNAIL_DIMENSION = 512
+export const THUMBNAIL_REFRESH_INTERVAL_MS = 60_000
+
+/**
+ * Thumbnails are expensive to export, rasterize and upload, so keep the
+ * existing preview while the user is editing and refresh it periodically.
+ * Missing previews, explicit version saves and manual/page-hide saves always
+ * refresh.
+ */
+export function shouldRefreshThumbnail({
+    force,
+    hasThumbnail,
+    currentXml,
+    thumbnailXml,
+    elapsedMs,
+    intervalMs = THUMBNAIL_REFRESH_INTERVAL_MS,
+}: {
+    force: boolean
+    hasThumbnail: boolean
+    currentXml: string
+    thumbnailXml: string | null
+    elapsedMs: number
+    intervalMs?: number
+}): boolean {
+    if (force) return true
+    if (!hasThumbnail) return true
+    if (!currentXml || currentXml === thumbnailXml) return false
+    return elapsedMs >= intervalMs
+}
 
 /**
  * Converts an SVG/data image URL into a PNG data URL using an offscreen

@@ -29,6 +29,7 @@
         "dist:all": "npm run electron:build && npm run electron:prepare && npx electron-builder --config electron/electron-builder.yml --mac --win --linux",
         "test": "vitest",
         "test:e2e": "playwright test",
+        "test:e2e:server": "playwright test --config playwright.server.config.ts",
         "security:check": "node scripts/security-check.mjs",
         "db:generate": "drizzle-kit generate",
         "db:migrate": "node scripts/migrate.mjs",

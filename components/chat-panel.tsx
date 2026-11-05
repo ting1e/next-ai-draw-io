@@ -41,6 +41,7 @@ import { getSelectedAIConfig, useModelConfig } from "@/hooks/use-model-config"
 import { useSessionManager } from "@/hooks/use-session-manager"
 import { useValidateDiagram } from "@/hooks/use-validate-diagram"
 import { authClient } from "@/lib/auth/auth-client"
+import { consumeHydrationEcho } from "@/lib/autosave-hydration"
 import { getApiEndpoint } from "@/lib/base-path"
 import { findCachedResponse } from "@/lib/cached-responses"
 import type { DrawioTheme } from "@/lib/drawio-themes"
@@ -49,6 +50,10 @@ import { isPdfFile, isTextFile } from "@/lib/pdf-utils"
 import { getSessionCount, sanitizeMessages } from "@/lib/session-storage"
 import { STORAGE_KEYS } from "@/lib/storage"
 import { createServerStorageProvider } from "@/lib/storage/server-storage"
+import {
+    shouldRefreshThumbnail,
+    THUMBNAIL_REFRESH_INTERVAL_MS,
+} from "@/lib/thumbnails"
 import type { UrlData } from "@/lib/url-utils"
 import { type FileData, useFileProcessor } from "@/lib/use-file-processor"
 import { useQuotaManager } from "@/lib/use-quota-manager"
@@ -318,6 +323,12 @@ export default function ChatPanel({
     useEffect(() => {
         latestSvgRef.current = latestSvg
     }, [latestSvg])
+
+    // XML that the current thumbnail was generated from, plus when it was
+    // captured. Existing thumbnails are still "unknown" until refreshed so the
+    // first edit after loading a session updates a potentially stale preview.
+    const thumbnailXmlRef = useRef<string | null>(null)
+    const thumbnailCapturedAtRef = useRef(0)
 
     // Ref to track consecutive auto-retry count (reset on user action)
     const autoRetryCountRef = useRef(0)
@@ -602,6 +613,10 @@ export default function ChatPanel({
             } | null,
         ) => {
             const hasRealDiagram = isRealDiagram(data?.diagramXml)
+            // The exact XML behind a stored thumbnail is not known. Treat it
+            // as stale so the first edit refreshes the gallery preview.
+            thumbnailXmlRef.current = null
+            thumbnailCapturedAtRef.current = 0
             if (data) {
                 // Begin hydration: suppress autosave until Draw.io echoes the
                 // loaded XML back (its post-load autosave).
@@ -657,8 +672,11 @@ export default function ChatPanel({
                 if (freshThumb) {
                     latestSvgRef.current = freshThumb
                     thumbnailDataUrl = freshThumb
+                    thumbnailXmlRef.current = currentDiagramXml
+                    thumbnailCapturedAtRef.current = Date.now()
                 } else if (latestSvgRef.current) {
-                    // Use cached thumbnail only if we have a real diagram
+                    // Use cached thumbnail only if we have a real diagram.
+                    // Do not advance the baseline: the next save should retry.
                     thumbnailDataUrl = latestSvgRef.current
                 }
             }
@@ -769,18 +787,21 @@ export default function ChatPanel({
 
         // While a freshly loaded session is still hydrating Draw.io, do not
         // write to the server: Draw.io fires an autosave right after loading
-        // that merely echoes the loaded XML back. Cancel any pending save,
-        // adopt the echo as the new baseline and end hydration - real user
-        // edits afterwards resume autosave. (`null` means not hydrating.)
+        // that merely echoes the loaded XML back. Hydration is a one-shot
+        // gate: an identical echo is ignored and ends hydration, while a
+        // different XML is a real edit and falls through to autosave.
+        // (`null` means not hydrating.)
         if (hydrationXmlRef.current !== null) {
             if (localStorageDebounceRef.current) {
                 clearTimeout(localStorageDebounceRef.current)
                 localStorageDebounceRef.current = null
             }
-            if (chartXML !== hydrationXmlRef.current) {
-                hydrationXmlRef.current = chartXML
-            }
-            return
+            const hydration = consumeHydrationEcho(
+                hydrationXmlRef.current,
+                chartXML,
+            )
+            hydrationXmlRef.current = hydration.baseline
+            if (hydration.isEcho) return
         }
 
         // Clear any pending save
@@ -804,14 +825,22 @@ export default function ChatPanel({
                 if (hydrationXmlRef.current !== null) return
                 if (messages.length > 0 || hasDiagramNow) {
                     const createVersion = pendingVersionRef.current
-                    // Only capture/upload a thumbnail when one is missing or
-                    // when a version preview is needed - avoid doing it on
-                    // every autosave tick.
-                    const hasThumbnailAlready =
-                        !!currentSessionRef.current?.thumbnailDataUrl
+                    // Refreshing a thumbnail exports/rasterizes/uploads it, so
+                    // only do it when one is missing, a version preview is
+                    // needed, or the diagram changed and the throttle elapsed.
+                    const currentXml = chartXMLRef.current || ""
+                    const refreshThumbnail = shouldRefreshThumbnail({
+                        force: createVersion,
+                        hasThumbnail:
+                            !!currentSessionRef.current?.thumbnailDataUrl,
+                        currentXml,
+                        thumbnailXml: thumbnailXmlRef.current,
+                        elapsedMs: Date.now() - thumbnailCapturedAtRef.current,
+                        intervalMs: THUMBNAIL_REFRESH_INTERVAL_MS,
+                    })
                     const sessionData = await buildSessionData({
                         withThumbnail:
-                            (createVersion || !hasThumbnailAlready) &&
+                            refreshThumbnail &&
                             hasDiagramNow &&
                             !isNodiagramSession,
                         createVersion,
@@ -1159,7 +1188,11 @@ export default function ChatPanel({
     )
 
     const handleRestoreVersion = useCallback(
-        (xml: string) => {
+        (xml: string, revision: number) => {
+            // The restore endpoint already advanced the server revision.
+            // Adopt it before the next autosave, otherwise that PATCH uses the
+            // old revision and surfaces a false 409 conflict.
+            sessionManager.applyRestoredVersion(xml, revision)
             onDisplayChart(xml, true)
             chartXMLRef.current = xml
             justLoadedSessionRef.current = false
@@ -1168,18 +1201,27 @@ export default function ChatPanel({
             hydrationXmlRef.current = null
             toast.success(dict.diagrams.saved)
         },
-        [onDisplayChart, dict.diagrams.saved],
+        [sessionManager, onDisplayChart, dict.diagrams.saved],
     )
 
     const handleSaveVersion = useCallback(async () => {
         const sessionData = await buildSessionData({ withThumbnail: true })
-        await sessionManager.saveCurrentSession({
+        const outcome = await sessionManager.saveCurrentSession({
             ...sessionData,
             createVersion: true,
             versionLabel: "Manual save",
         })
-        toast.success(dict.diagrams.saveVersion)
-    }, [buildSessionData, sessionManager, dict.diagrams.saveVersion])
+        if (outcome.ok) {
+            toast.success(dict.diagrams.saveVersion)
+        } else {
+            toast.error(dict.diagrams.saveError)
+        }
+    }, [
+        buildSessionData,
+        sessionManager,
+        dict.diagrams.saveVersion,
+        dict.diagrams.saveError,
+    ])
 
     const handleReloadConflict = useCallback(async () => {
         const data = await sessionManager.resolveConflictReload()

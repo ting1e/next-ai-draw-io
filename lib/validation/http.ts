@@ -12,19 +12,48 @@ export async function readJsonBody(
     maxBytes: number,
 ): Promise<JsonBodyResult> {
     const declaredLength = Number(request.headers.get("content-length") || 0)
-    if (declaredLength > maxBytes) {
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
         return { ok: false, status: 413, error: "Payload too large" }
     }
 
     let text: string
     try {
-        text = await request.text()
+        if (!request.body) {
+            text = ""
+        } else {
+            // Read incrementally instead of request.text(): a chunked request
+            // without Content-Length must be rejected as soon as it crosses
+            // the limit, before the whole body is buffered in memory.
+            const reader = request.body.getReader()
+            const decoder = new TextDecoder()
+            const chunks: string[] = []
+            let receivedBytes = 0
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) break
+                    if (!value) continue
+
+                    receivedBytes += value.byteLength
+                    if (receivedBytes > maxBytes) {
+                        await reader.cancel().catch(() => {})
+                        return {
+                            ok: false,
+                            status: 413,
+                            error: "Payload too large",
+                        }
+                    }
+                    chunks.push(decoder.decode(value, { stream: true }))
+                }
+                chunks.push(decoder.decode())
+                text = chunks.join("")
+            } finally {
+                reader.releaseLock()
+            }
+        }
     } catch {
         return { ok: false, status: 400, error: "Unable to read request body" }
-    }
-
-    if (Buffer.byteLength(text, "utf8") > maxBytes) {
-        return { ok: false, status: 413, error: "Payload too large" }
     }
 
     try {
