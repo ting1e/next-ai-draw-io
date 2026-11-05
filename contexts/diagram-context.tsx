@@ -63,6 +63,11 @@ interface ExportTask {
     format: DrawioExportFormat
     timeoutMs: number
     saveToHistory: boolean
+    // Background exports (thumbnails, validation snapshots) must never
+    // recreate the editor iframe on timeout: doing so reloads the diagram
+    // right after a save. Explicit user exports still reset the channel so a
+    // late response cannot be consumed by the next task.
+    background?: boolean
     onData: (data: EventExport) => void
     onTimeout?: () => void
 }
@@ -177,22 +182,29 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             try {
                 task.onTimeout?.()
             } finally {
-                // The old iframe may still answer. Recreate it so a late
-                // response cannot be consumed by the next queued task.
-                exportRecoveryPendingRef.current = true
-                hasCalledOnLoadRef.current = false
-                isDrawioReadyRef.current = false
-                setIsDrawioReady(false)
-                setExportChannelEpoch((epoch) => epoch + 1)
-                if (exportRecoveryTimerRef.current) {
-                    clearTimeout(exportRecoveryTimerRef.current)
-                }
-                exportRecoveryTimerRef.current = setTimeout(() => {
-                    exportRecoveryTimerRef.current = null
-                    if (!exportRecoveryPendingRef.current) return
-                    exportRecoveryPendingRef.current = false
+                if (task.background) {
+                    // Saving must not reload the editor. A late background
+                    // response is harmless: it describes the same diagram and
+                    // at worst becomes the next thumbnail.
                     startNextExport()
-                }, EXPORT_RECOVERY_TIMEOUT_MS)
+                } else {
+                    // The old iframe may still answer. Recreate it so a late
+                    // response cannot be consumed by the next queued task.
+                    exportRecoveryPendingRef.current = true
+                    hasCalledOnLoadRef.current = false
+                    isDrawioReadyRef.current = false
+                    setIsDrawioReady(false)
+                    setExportChannelEpoch((epoch) => epoch + 1)
+                    if (exportRecoveryTimerRef.current) {
+                        clearTimeout(exportRecoveryTimerRef.current)
+                    }
+                    exportRecoveryTimerRef.current = setTimeout(() => {
+                        exportRecoveryTimerRef.current = null
+                        if (!exportRecoveryPendingRef.current) return
+                        exportRecoveryPendingRef.current = false
+                        startNextExport()
+                    }, EXPORT_RECOVERY_TIMEOUT_MS)
+                }
             }
         }, task.timeoutMs)
 
@@ -255,6 +267,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                 format: "xmlsvg",
                 timeoutMs: 3000,
                 saveToHistory: false,
+                background: true,
                 onData: (data) => {
                     const svgData = isSvgExportData(data.data)
                         ? data.data
@@ -285,6 +298,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                 format: "png",
                 timeoutMs: 5000,
                 saveToHistory: false,
+                background: true,
                 onData: (data) => {
                     finish(
                         data.data?.startsWith("data:image/png")

@@ -94,27 +94,27 @@ describe("DiagramProvider export queue", () => {
         await expect(second).resolves.toBe(SVG_DATA)
     })
 
-    it("recreates the export channel after a timeout and ignores late responses", async () => {
+    it("recreates the export channel after a user export timeout and ignores late responses", async () => {
         vi.useFakeTimers()
         const { result, exportDiagram } = setup()
 
-        let timedOut!: Promise<string | null>
         act(() => {
-            timedOut = result.current.getThumbnailSvg()
+            result.current.onDrawioLoad()
+        })
+        act(() => {
+            result.current.handleExport()
         })
         expect(exportDiagram).toHaveBeenCalledTimes(1)
 
         act(() => {
-            vi.advanceTimersByTime(3000)
+            vi.advanceTimersByTime(10_000)
         })
-        await expect(timedOut).resolves.toBeNull()
         expect(result.current.exportChannelEpoch).toBe(1)
         expect(result.current.isDrawioReady).toBe(false)
 
         // The next request waits for the fresh iframe.
-        let next!: Promise<string | null>
         act(() => {
-            next = result.current.getThumbnailSvg()
+            result.current.handleExport()
         })
         expect(exportDiagram).toHaveBeenCalledTimes(1)
 
@@ -122,6 +122,7 @@ describe("DiagramProvider export queue", () => {
         act(() => {
             result.current.handleDiagramExport(exportEvent(SVG_DATA, "xmlsvg"))
         })
+        expect(result.current.latestSvg).toBe("")
         expect(exportDiagram).toHaveBeenCalledTimes(1)
 
         await act(async () => {
@@ -135,25 +136,23 @@ describe("DiagramProvider export queue", () => {
         act(() => {
             result.current.handleDiagramExport(exportEvent(SVG_DATA, "xmlsvg"))
         })
-        await expect(next).resolves.toBe(SVG_DATA)
+        expect(result.current.latestSvg).toBe(SVG_DATA)
     })
 
     it("resumes the queue when the recreated iframe never loads", async () => {
         vi.useFakeTimers()
         const { result, exportDiagram } = setup()
 
-        let timedOut!: Promise<string | null>
         act(() => {
-            timedOut = result.current.getThumbnailSvg()
+            result.current.handleExport()
         })
         act(() => {
-            vi.advanceTimersByTime(3000)
+            vi.advanceTimersByTime(10_000)
         })
-        await expect(timedOut).resolves.toBeNull()
+        expect(result.current.exportChannelEpoch).toBe(1)
 
-        let next!: Promise<string | null>
         act(() => {
-            next = result.current.getThumbnailSvg()
+            result.current.handleExport()
         })
         // Recovery blocks the queue until its deadline, then lets the next
         // task start (and time out) instead of hanging forever.
@@ -164,9 +163,42 @@ describe("DiagramProvider export queue", () => {
         expect(exportDiagram).toHaveBeenCalledTimes(2)
 
         act(() => {
+            vi.advanceTimersByTime(10_000)
+        })
+        expect(result.current.exportChannelEpoch).toBe(2)
+    })
+
+    it("does not recreate the iframe when a thumbnail export times out", async () => {
+        vi.useFakeTimers()
+        const { result, exportDiagram } = setup()
+
+        act(() => {
+            result.current.onDrawioLoad()
+        })
+
+        let timedOut!: Promise<string | null>
+        act(() => {
+            timedOut = result.current.getThumbnailSvg()
+        })
+        act(() => {
+            vi.advanceTimersByTime(3000)
+        })
+        await expect(timedOut).resolves.toBeNull()
+        expect(result.current.exportChannelEpoch).toBe(0)
+        expect(result.current.isDrawioReady).toBe(true)
+
+        // Saving continues with the existing editor: the next background
+        // export starts immediately instead of waiting for a reload.
+        let next!: Promise<string | null>
+        act(() => {
+            next = result.current.getThumbnailSvg()
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(2)
+        act(() => {
             vi.advanceTimersByTime(3000)
         })
         await expect(next).resolves.toBeNull()
+        expect(result.current.exportChannelEpoch).toBe(0)
     })
 
     it("accepts autosaves again after the recreated iframe loads", async () => {
