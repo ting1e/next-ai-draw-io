@@ -51,11 +51,11 @@ export interface UseSessionManagerReturn {
     refreshSessions: () => Promise<void>
     clearCurrentSession: () => void
     /**
-     * Adopt the revision returned by a server-side version restore. Without
-     * this the next autosave PATCHes against the pre-restore revision and the
-     * server rejects it with a false 409 conflict.
+     * Restore a server-side version while coordinating with the save queue:
+     * queued saves are dropped, the active save is awaited, and new saves are
+     * paused until the restored XML/revision has been adopted.
      */
-    applyRestoredVersion: (diagramXml: string, revision: number) => void
+    restoreVersion: (version: number) => Promise<SessionData | null>
     renameSession: (id: string, title: string) => Promise<void>
     duplicateSession: (id: string) => Promise<ChatSession | null>
     resolveConflictReload: () => Promise<SessionData | null>
@@ -125,13 +125,26 @@ export function useSessionManager(
     const queuedSaveRef = useRef<{
         data: SessionData
         targetSessionId: string | null
+        generation: number
         promise: Promise<SaveOutcome>
         resolve: (outcome: SaveOutcome) => void
     } | null>(null)
     // Set when the active save created a brand-new session. Saves queued while
     // that creation was in flight still target `null`, so they must be rebound
     // to the new ID once creation finishes instead of being dropped as stale.
-    const createdSessionIdRef = useRef<string | null>(null)
+    // The generation prevents a create that finished after "New Chat" from
+    // adopting (and pulling later saves into) the previous session.
+    const createdSessionRef = useRef<{
+        id: string
+        generation: number
+    } | null>(null)
+    // Bumped whenever the user starts a different conversation (new chat,
+    // switch, delete, URL navigation, conflict resolution). Async work from an
+    // older generation may still finish, but it must not become current.
+    const sessionGenerationRef = useRef(0)
+    // Version restore is coordinated with the save queue: no new save may be
+    // enqueued while the restore request is running.
+    const versionRestoreInProgressRef = useRef(false)
 
     const isInitializedRef = useRef(false)
     // Sequence guard for URL changes - prevents out-of-order async resolution
@@ -145,6 +158,22 @@ export function useSessionManager(
         revisionRef.current = session?.revision
         setCurrentSession(session)
         setCurrentSessionId(session?.id ?? null)
+    }, [])
+
+    const bumpSessionGeneration = useCallback(() => {
+        sessionGenerationRef.current += 1
+        createdSessionRef.current = null
+        // Saves queued for the previous conversation must not run later.
+        const queued = queuedSaveRef.current
+        if (queued) {
+            queuedSaveRef.current = null
+            queued.resolve({
+                ok: false,
+                error: "failed",
+                message: "Stale session",
+            })
+        }
+        return sessionGenerationRef.current
     }, [])
 
     // Load sessions list
@@ -232,6 +261,7 @@ export function useSessionManager(
                     // Only update if the session is different from current
                     setCurrentSessionId((current) => {
                         if (current !== session.id) {
+                            bumpSessionGeneration()
                             applyCurrentSession(session)
                             return session.id
                         }
@@ -245,7 +275,13 @@ export function useSessionManager(
         }
 
         handleSessionIdChange()
-    }, [initialSessionId, isAvailable, provider, applyCurrentSession])
+    }, [
+        initialSessionId,
+        isAvailable,
+        provider,
+        applyCurrentSession,
+        bumpSessionGeneration,
+    ])
 
     // Refresh sessions on window focus (multi-tab sync)
     useEffect(() => {
@@ -263,11 +299,16 @@ export function useSessionManager(
     // React state is still stale and trigger a false 409 conflict.
     const switchSession = useCallback(
         async (id: string): Promise<SessionData | null> => {
-            if (id === currentSessionId) return null
+            if (id === currentSessionIdRef.current) return null
             if (!provider) return null
+
+            // Invalidate queued work and any create that is still in flight
+            // for the previous (possibly blank) conversation.
+            const generation = bumpSessionGeneration()
 
             // Load the target session
             const session = await provider.get(id)
+            if (generation !== sessionGenerationRef.current) return null
             if (!session) {
                 console.error("Session not found:", id)
                 return null
@@ -280,7 +321,7 @@ export function useSessionManager(
 
             return toSessionData(session)
         },
-        [currentSessionId, provider, applyCurrentSession],
+        [provider, applyCurrentSession, bumpSessionGeneration],
     )
 
     // Delete a session
@@ -288,10 +329,11 @@ export function useSessionManager(
         async (id: string): Promise<{ wasCurrentSession: boolean }> => {
             if (!provider) return { wasCurrentSession: false }
             const wasCurrentSession = id === currentSessionIdRef.current
+            if (wasCurrentSession) bumpSessionGeneration()
             await provider.delete(id)
 
             // If deleting current session, clear state (caller will show new empty session)
-            if (wasCurrentSession) {
+            if (wasCurrentSession && currentSessionIdRef.current === id) {
                 applyCurrentSession(null)
             }
 
@@ -299,7 +341,7 @@ export function useSessionManager(
 
             return { wasCurrentSession }
         },
-        [provider, applyCurrentSession, refreshSessions],
+        [provider, applyCurrentSession, bumpSessionGeneration, refreshSessions],
     )
 
     const updateMetadataList = useCallback((session: ChatSession) => {
@@ -328,14 +370,19 @@ export function useSessionManager(
         async (
             data: SessionData,
             targetSessionId: string | null,
+            generation: number,
         ): Promise<SaveOutcome> => {
             if (!provider) {
                 return { ok: false, error: "failed", message: "Not available" }
             }
 
-            // Drop saves whose target is no longer the current session
-            // (the user switched away while this save was queued).
-            if (targetSessionId !== currentSessionIdRef.current) {
+            // Drop saves whose target is no longer the current session, or
+            // that belong to a conversation the user has left (including one
+            // blank conversation being replaced by another blank one).
+            if (
+                generation !== sessionGenerationRef.current ||
+                targetSessionId !== currentSessionIdRef.current
+            ) {
                 return { ok: false, error: "failed", message: "Stale session" }
             }
 
@@ -355,7 +402,10 @@ export function useSessionManager(
                         thumbnailDataUrl: data.thumbnailDataUrl,
                     })
                     justCreated = true
-                    createdSessionIdRef.current = session.id
+                    createdSessionRef.current = {
+                        id: session.id,
+                        generation,
+                    }
                 } else {
                     const existing = session
                     session = {
@@ -400,11 +450,12 @@ export function useSessionManager(
                     // Only repoint the current session if this save still
                     // belongs to it - the user may have switched away while
                     // the save was in flight.
-                    if (
-                        justCreated
+                    const stillCurrent =
+                        generation === sessionGenerationRef.current &&
+                        (justCreated
                             ? currentSessionIdRef.current == null
-                            : currentSessionIdRef.current === session.id
-                    ) {
+                            : currentSessionIdRef.current === session.id)
+                    if (stillCurrent) {
                         applyCurrentSession(updatedSession)
                     }
                     setSaveState("saved")
@@ -449,6 +500,13 @@ export function useSessionManager(
             data: SessionData,
             forSessionId?: string | null,
         ): Promise<SaveOutcome> => {
+            if (versionRestoreInProgressRef.current) {
+                return Promise.resolve({
+                    ok: false,
+                    error: "failed",
+                    message: "Version restore in progress",
+                })
+            }
             if (
                 forSessionId !== undefined &&
                 forSessionId !== currentSessionIdRef.current
@@ -470,13 +528,15 @@ export function useSessionManager(
             // Pin the target at enqueue time so a queued save can be
             // dropped if the user switches sessions before it runs.
             const targetSessionId = currentSessionIdRef.current
+            const targetGeneration = sessionGenerationRef.current
 
             const startSave = (
                 payload: SessionData,
                 sessionId: string | null,
+                generation: number,
                 resolve?: (outcome: SaveOutcome) => void,
             ): Promise<SaveOutcome> => {
-                const run = performSave(payload, sessionId)
+                const run = performSave(payload, sessionId, generation)
                     .then((outcome) => {
                         resolve?.(outcome)
                         return outcome
@@ -492,16 +552,19 @@ export function useSessionManager(
                             // pinned to `null`. Now that the session exists,
                             // bind it to that session so it is not discarded
                             // as stale and the last edit is persisted.
+                            const created = createdSessionRef.current
                             const nextTargetSessionId =
                                 next.targetSessionId === null &&
-                                createdSessionIdRef.current !== null &&
-                                currentSessionIdRef.current ===
-                                    createdSessionIdRef.current
-                                    ? createdSessionIdRef.current
+                                next.generation ===
+                                    sessionGenerationRef.current &&
+                                created?.generation === next.generation &&
+                                currentSessionIdRef.current === created.id
+                                    ? created.id
                                     : next.targetSessionId
                             startSave(
                                 next.data,
                                 nextTargetSessionId,
+                                next.generation,
                                 next.resolve,
                             )
                         }
@@ -512,7 +575,11 @@ export function useSessionManager(
 
             if (activeSaveRef.current) {
                 const queued = queuedSaveRef.current
-                if (queued && queued.targetSessionId === targetSessionId) {
+                if (
+                    queued &&
+                    queued.targetSessionId === targetSessionId &&
+                    queued.generation === targetGeneration
+                ) {
                     // Coalesce into the pending save: newest content wins,
                     // version snapshots survive either request.
                     queuedSaveRef.current = {
@@ -543,39 +610,77 @@ export function useSessionManager(
                 queuedSaveRef.current = {
                     data,
                     targetSessionId,
+                    generation: targetGeneration,
                     promise,
                     resolve,
                 }
                 return promise
             }
 
-            return startSave(data, targetSessionId)
+            return startSave(data, targetSessionId, targetGeneration)
         },
         [provider, performSave],
     )
 
     // Clear current session state (for starting fresh without loading another session)
     const clearCurrentSession = useCallback(() => {
+        bumpSessionGeneration()
         applyCurrentSession(null)
         setConflict(null)
         setSaveState("idle")
-    }, [applyCurrentSession])
+    }, [applyCurrentSession, bumpSessionGeneration])
 
-    // A version restore bypasses the save queue (the dialog POSTs directly),
-    // so mirror the authoritative XML/revision it returns before the next
-    // autosave runs.
-    const applyRestoredVersion = useCallback(
-        (diagramXml: string, revision: number) => {
+    // A version restore first settles the save queue, then calls the server.
+    // Otherwise a queued autosave could PATCH the old local XML over the
+    // freshly restored revision as soon as the restore response returns.
+    const restoreVersion = useCallback(
+        async (version: number): Promise<SessionData | null> => {
             const current = currentSessionRef.current
-            if (!current) return
-            applyCurrentSession({
-                ...current,
-                diagramXml,
-                revision,
-                updatedAt: Date.now(),
-            })
+            if (!current || !provider?.restoreVersion) return null
+
+            versionRestoreInProgressRef.current = true
+            try {
+                // Drop anything already waiting to save.
+                const queued = queuedSaveRef.current
+                if (queued) {
+                    queuedSaveRef.current = null
+                    queued.resolve({
+                        ok: false,
+                        error: "failed",
+                        message: "Stale session",
+                    })
+                }
+
+                // Wait for the in-flight PATCH/create to settle so the restore
+                // is the last write to reach the server.
+                const active = activeSaveRef.current
+                if (active) {
+                    await active.catch(() => {})
+                }
+
+                const restored = await provider.restoreVersion(
+                    current.id,
+                    version,
+                )
+
+                // The user may have switched conversations while waiting.
+                if (currentSessionIdRef.current !== current.id) return null
+
+                const restoredSession: ChatSession = {
+                    ...current,
+                    diagramXml: restored.diagramXml,
+                    revision: restored.revision,
+                    updatedAt: Date.now(),
+                }
+                applyCurrentSession(restoredSession)
+                updateMetadataList(restoredSession)
+                await refreshSessions()
+                return toSessionData(restoredSession)
+            } finally {
+                versionRestoreInProgressRef.current = false
+            }
         },
-        [applyCurrentSession],
+        [provider, applyCurrentSession, updateMetadataList, refreshSessions],
     )
 
     const renameSession = useCallback(
@@ -610,12 +715,13 @@ export function useSessionManager(
         const serverSession = conflict?.serverSession
         if (!serverSession) return null
         pendingSaveRef.current = null
+        bumpSessionGeneration()
         applyCurrentSession(serverSession)
         setConflict(null)
         setSaveState("idle")
         await refreshSessions()
         return toSessionData(serverSession)
-    }, [conflict, applyCurrentSession, refreshSessions])
+    }, [conflict, applyCurrentSession, bumpSessionGeneration, refreshSessions])
 
     const resolveConflictSaveCopy = useCallback(async () => {
         const pending = pendingSaveRef.current
@@ -628,12 +734,13 @@ export function useSessionManager(
             thumbnailDataUrl: pending.session.thumbnailDataUrl,
         })
         pendingSaveRef.current = null
+        bumpSessionGeneration()
         applyCurrentSession(copy)
         setConflict(null)
         setSaveState("saved")
         await refreshSessions()
         return toSessionData(copy)
-    }, [provider, applyCurrentSession, refreshSessions])
+    }, [provider, applyCurrentSession, bumpSessionGeneration, refreshSessions])
 
     return {
         sessions,
@@ -649,7 +756,7 @@ export function useSessionManager(
         saveCurrentSession,
         refreshSessions,
         clearCurrentSession,
-        applyRestoredVersion,
+        restoreVersion,
         renameSession,
         duplicateSession,
         resolveConflictReload,

@@ -29,7 +29,7 @@ interface VersionHistoryDialogProps {
     open: boolean
     onOpenChange: (open: boolean) => void
     diagramId: string | null
-    onRestore: (xml: string, revision: number) => void
+    onRestore: (revision: number) => Promise<void>
     onSaveVersion?: () => Promise<void>
 }
 
@@ -78,18 +78,7 @@ export function VersionHistoryDialog({
         if (!diagramId) return
         setRestoring(revision)
         try {
-            const response = await fetch(
-                getApiEndpoint(
-                    `/api/diagrams/${diagramId}/versions/${revision}`,
-                ),
-                { method: "POST" },
-            )
-            if (!response.ok) throw new Error("Failed to restore version")
-            const data = (await response.json()) as {
-                diagramXml: string
-                revision: number
-            }
-            onRestore(data.diagramXml, data.revision)
+            await onRestore(revision)
             toast.success(
                 formatMessage(dict.diagrams.restoreTitle, {
                     version: revision,

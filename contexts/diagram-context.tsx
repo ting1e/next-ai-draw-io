@@ -50,6 +50,15 @@ function isSvgExportData(data: string | undefined): data is string {
     )
 }
 
+type DrawioExportFormat = "svg" | "xmlsvg" | "png"
+
+interface ExportTask {
+    format: DrawioExportFormat
+    timeoutMs: number
+    onData: (data: EventExport) => void
+    onTimeout?: () => void
+}
+
 export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const [chartXML, setChartXML] = useState<string>("")
     const [latestSvg, setLatestSvg] = useState<string>("")
@@ -61,11 +70,14 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const hasCalledOnLoadRef = useRef(false)
     const drawioRef = useRef<DrawIoEmbedRef | null>(null)
     const resolverRef = useRef<((value: string) => void) | null>(null)
-    // Resolver for thumbnail/SVG exports. Kept separate from resolverRef,
-    // which resolves to the extracted diagram XML used by edit_diagram.
-    const svgResolverRef = useRef<((value: string) => void) | null>(null)
-    // Resolver for PNG export (used for VLM validation)
-    const pngResolverRef = useRef<((value: string) => void) | null>(null)
+    // Draw.io export events do not identify which request they answer, so all
+    // exports are serialized. A queued task owns exactly one in-flight export
+    // and its own timeout.
+    const exportQueueRef = useRef<ExportTask[]>([])
+    const activeExportRef = useRef<{
+        task: ExportTask
+        timer: ReturnType<typeof setTimeout>
+    } | null>(null)
     // Track if we're expecting an export for history (user-initiated)
     const expectHistoryExportRef = useRef<boolean>(false)
     // Track latest chartXML for restoration after remount
@@ -92,30 +104,93 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         chartXMLRef.current = chartXML
     }, [chartXML])
 
-    // Track if we're expecting an export for file save (stores raw export data)
-    const saveResolverRef = useRef<{
-        resolver: ((data: string, fullDiagramXML?: string) => void) | null
-        format: ExportFormat | null
-    }>({ resolver: null, format: null })
+    const handleXmlExportData = (data: EventExport) => {
+        // Don't write chartXML here: exports don't change the diagram, and
+        // data.xml from xmlsvg exports has compressed <diagram> payloads that
+        // would break edit_diagram/display_diagram. Autosave keeps chartXML
+        // up to date with the full uncompressed multi-page document (#879).
+        const extractedXML = extractDiagramXML(data.data)
+        setLatestSvg(data.data)
 
-    const handleExport = () => {
-        if (drawioRef.current) {
-            // Mark that this export should be saved to history
-            expectHistoryExportRef.current = true
-            drawioRef.current.exportDiagram({
-                format: "xmlsvg",
+        // Only add to history if this was a user-initiated export
+        // Limit to 20 entries to prevent memory leaks during long sessions
+        const MAX_HISTORY_SIZE = 20
+        if (expectHistoryExportRef.current) {
+            setDiagramHistory((prev) => {
+                const newHistory = [
+                    ...prev,
+                    {
+                        svg: data.data,
+                        xml: extractedXML,
+                    },
+                ]
+                // Keep only the last MAX_HISTORY_SIZE entries (circular buffer)
+                return newHistory.slice(-MAX_HISTORY_SIZE)
             })
+            expectHistoryExportRef.current = false
+        }
+
+        if (resolverRef.current) {
+            resolverRef.current(extractedXML)
+            resolverRef.current = null
         }
     }
 
-    const handleExportWithoutHistory = () => {
-        if (drawioRef.current) {
-            // Export without saving to history (for edit_diagram fetching current state)
-            drawioRef.current.exportDiagram({
-                format: "xmlsvg",
-            })
+    const startNextExport = () => {
+        if (activeExportRef.current) return
+        const task = exportQueueRef.current.shift()
+        if (!task) return
+
+        if (!drawioRef.current) {
+            task.onTimeout?.()
+            startNextExport()
+            return
+        }
+
+        const timer = setTimeout(() => {
+            const active = activeExportRef.current
+            // A stale timer must not clear a newer request's resolver.
+            if (!active || active.task !== task) return
+            activeExportRef.current = null
+            try {
+                task.onTimeout?.()
+            } finally {
+                startNextExport()
+            }
+        }, task.timeoutMs)
+
+        activeExportRef.current = { task, timer }
+        try {
+            drawioRef.current.exportDiagram({ format: task.format })
+        } catch {
+            clearTimeout(timer)
+            activeExportRef.current = null
+            task.onTimeout?.()
+            startNextExport()
         }
     }
+
+    const requestExport = (task: ExportTask) => {
+        exportQueueRef.current.push(task)
+        startNextExport()
+    }
+
+    const requestXmlExport = (saveToHistory: boolean) => {
+        if (!drawioRef.current) return
+        if (saveToHistory) expectHistoryExportRef.current = true
+        requestExport({
+            format: "xmlsvg",
+            timeoutMs: 10_000,
+            onData: handleXmlExportData,
+            onTimeout: () => {
+                if (saveToHistory) expectHistoryExportRef.current = false
+            },
+        })
+    }
+
+    const handleExport = () => requestXmlExport(true)
+
+    const handleExportWithoutHistory = () => requestXmlExport(false)
 
     // Get current diagram as SVG for thumbnail (used by session storage)
     const getThumbnailSvg = async (): Promise<string | null> => {
@@ -123,61 +198,56 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         // Don't export if diagram is empty
         if (!isRealDiagram(chartXMLRef.current)) return null
 
-        try {
-            const svgData = await Promise.race([
-                new Promise<string>((resolve) => {
-                    svgResolverRef.current = resolve
-                    drawioRef.current?.exportDiagram({ format: "xmlsvg" })
-                }),
-                new Promise<string>((_, reject) =>
-                    setTimeout(() => {
-                        svgResolverRef.current = null
-                        reject(new Error("Export timeout"))
-                    }, 3000),
-                ),
-            ])
-
-            // Update latestSvg so it's available for future saves
-            if (isSvgExportData(svgData)) {
-                setLatestSvg(svgData)
-                return svgData
+        return new Promise<string | null>((resolve) => {
+            let settled = false
+            const finish = (value: string | null) => {
+                if (settled) return
+                settled = true
+                resolve(value)
             }
-            return null
-        } catch {
-            // Timeout is expected occasionally - don't log as error
-            return null
-        }
+
+            requestExport({
+                format: "xmlsvg",
+                timeoutMs: 3000,
+                onData: (data) => {
+                    const svgData = isSvgExportData(data.data)
+                        ? data.data
+                        : null
+                    if (svgData) setLatestSvg(svgData)
+                    finish(svgData)
+                },
+                onTimeout: () => finish(null),
+            })
+        })
     }
 
     // Capture current diagram as PNG for VLM validation
     const captureValidationPng = async (): Promise<string | null> => {
         if (!drawioRef.current) return null
         // Don't export if diagram is empty
-        if (!isRealDiagram(chartXML)) return null
+        if (!isRealDiagram(chartXMLRef.current)) return null
 
-        try {
-            const pngData = await Promise.race([
-                new Promise<string>((resolve) => {
-                    pngResolverRef.current = resolve
-                    drawioRef.current?.exportDiagram({ format: "png" })
-                }),
-                new Promise<string>((_, reject) =>
-                    setTimeout(
-                        () => reject(new Error("PNG export timeout")),
-                        5000,
-                    ),
-                ),
-            ])
-
-            // PNG data should be a base64 data URL
-            if (pngData?.startsWith("data:image/png")) {
-                return pngData
+        return new Promise<string | null>((resolve) => {
+            let settled = false
+            const finish = (value: string | null) => {
+                if (settled) return
+                settled = true
+                resolve(value)
             }
-            return null
-        } catch {
-            // Timeout is expected occasionally - don't log as error
-            return null
-        }
+
+            requestExport({
+                format: "png",
+                timeoutMs: 5000,
+                onData: (data) => {
+                    finish(
+                        data.data?.startsWith("data:image/png")
+                            ? data.data
+                            : null,
+                    )
+                },
+                onTimeout: () => finish(null),
+            })
+        })
     }
 
     const loadDiagram = (
@@ -219,62 +289,30 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     }
 
     const handleDiagramExport = (data: EventExport) => {
-        // Handle PNG export for VLM validation
-        if (pngResolverRef.current && data.data?.startsWith("data:image/png")) {
-            pngResolverRef.current(data.data)
-            pngResolverRef.current = null
-            return
-        }
-
-        // Handle save to file if requested (process raw data before extraction)
-        if (saveResolverRef.current.resolver) {
-            const format = saveResolverRef.current.format
-            saveResolverRef.current.resolver(data.data, data.xml)
-            saveResolverRef.current = { resolver: null, format: null }
-            // For non-xmlsvg formats, skip XML extraction as it will fail
-            // Only drawio (which uses xmlsvg internally) has the content attribute
-            // xmlsvg is saved directly as SVG file, no need for extraction
-            if (format === "png" || format === "svg" || format === "xmlsvg") {
-                return
+        const active = activeExportRef.current
+        if (active) {
+            // A late response for a previously timed-out request must not be
+            // mistaken for the current one.
+            if (data.format !== active.task.format) return
+            clearTimeout(active.timer)
+            activeExportRef.current = null
+            try {
+                active.task.onData(data)
+            } catch (error) {
+                console.error("Failed to process diagram export:", error)
+            } finally {
+                startNextExport()
             }
-        }
-
-        // Handle SVG/thumbnail export. This must run before extractDiagramXML:
-        // the resolver wants the raw SVG data URL, not the decoded diagram XML.
-        if (svgResolverRef.current && isSvgExportData(data.data)) {
-            svgResolverRef.current(data.data)
-            svgResolverRef.current = null
             return
         }
 
-        // Don't write chartXML here: exports don't change the diagram, and
-        // data.xml from xmlsvg exports has compressed <diagram> payloads that
-        // would break edit_diagram/display_diagram. Autosave keeps chartXML
-        // up to date with the full uncompressed multi-page document (#879).
-        const extractedXML = extractDiagramXML(data.data)
-        setLatestSvg(data.data)
-
-        // Only add to history if this was a user-initiated export
-        // Limit to 20 entries to prevent memory leaks during long sessions
-        const MAX_HISTORY_SIZE = 20
-        if (expectHistoryExportRef.current) {
-            setDiagramHistory((prev) => {
-                const newHistory = [
-                    ...prev,
-                    {
-                        svg: data.data,
-                        xml: extractedXML,
-                    },
-                ]
-                // Keep only the last MAX_HISTORY_SIZE entries (circular buffer)
-                return newHistory.slice(-MAX_HISTORY_SIZE)
-            })
-            expectHistoryExportRef.current = false
-        }
-
-        if (resolverRef.current) {
-            resolverRef.current(extractedXML)
-            resolverRef.current = null
+        // Unsolicited exports (for example from the editor UI) can still be
+        // surfaced as diagram history. Raster formats have no XML to extract.
+        if (data.format === "png" || data.format === "xmlpng") return
+        try {
+            handleXmlExportData(data)
+        } catch (error) {
+            console.error("Failed to process diagram export:", error)
         }
     }
 
@@ -308,12 +346,15 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Map format to draw.io export format
-        const drawioFormat =
+        const drawioFormat: DrawioExportFormat =
             format === "drawio" || format === "xmlsvg" ? "xmlsvg" : format
 
-        // Set up the resolver before triggering export
-        saveResolverRef.current = {
-            resolver: (exportData: string, fullDiagramXML?: string) => {
+        requestExport({
+            format: drawioFormat,
+            timeoutMs: 10_000,
+            onData: (data) => {
+                const exportData = data.data
+                const fullDiagramXML = data.xml
                 let fileContent: string | Blob
                 let mimeType: string
                 let extension: string
@@ -383,11 +424,10 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                     setTimeout(() => URL.revokeObjectURL(url), 100)
                 }
             },
-            format,
-        }
-
-        // Export diagram - callback will be handled in handleDiagramExport
-        drawioRef.current.exportDiagram({ format: drawioFormat })
+            onTimeout: () => {
+                console.warn("Draw.io export timed out while saving")
+            },
+        })
     }
 
     // Log save event to Langfuse (just flags the trace, doesn't send content)

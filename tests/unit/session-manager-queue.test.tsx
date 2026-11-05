@@ -76,6 +76,10 @@ function makeProvider() {
         delete: async () => {},
         rename: async () => {},
         duplicate: async () => null,
+        restoreVersion: async () => ({
+            diagramXml: "RESTORED",
+            revision: 6,
+        }),
     }
     return { provider, saveCalls, gates }
 }
@@ -508,6 +512,87 @@ describe("useSessionManager save queue", () => {
         expect(result.current.currentSession?.diagramXml).toBe("B")
     })
 
+    it("does not resurrect an old blank session after New Chat during creation", async () => {
+        let resolveFirstCreate!: (session: ChatSession) => void
+        let resolveSecondCreate!: (session: ChatSession) => void
+        const firstCreate = new Promise<ChatSession>((resolve) => {
+            resolveFirstCreate = resolve
+        })
+        const secondCreate = new Promise<ChatSession>((resolve) => {
+            resolveSecondCreate = resolve
+        })
+        const createCalls: string[] = []
+
+        const provider: SessionStorageProvider = {
+            kind: "server",
+            isAvailable: () => true,
+            list: async () => [],
+            get: async () => null,
+            create: async (input) => {
+                createCalls.push(input?.diagramXml ?? "")
+                return createCalls.length === 1 ? firstCreate : secondCreate
+            },
+            save: async () => ({ ok: true, revision: 2 }),
+            delete: async () => {},
+            rename: async () => {},
+            duplicate: async () => null,
+        }
+
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: null, provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let oldSave!: Promise<SaveOutcome>
+        act(() => {
+            oldSave = result.current.saveCurrentSession(DATA_A)
+        })
+        expect(createCalls).toEqual(["A"])
+
+        // Start a new blank conversation while A's create is still in flight,
+        // then edit/save B before A returns.
+        act(() => {
+            result.current.clearCurrentSession()
+        })
+        let newSave!: Promise<SaveOutcome>
+        act(() => {
+            newSave = result.current.saveCurrentSession(DATA_B)
+        })
+
+        await act(async () => {
+            resolveFirstCreate(
+                session({
+                    id: "old-a",
+                    revision: 1,
+                    diagramXml: "A",
+                    messages: [],
+                }),
+            )
+        })
+        await oldSave
+
+        // A must not become current again.
+        expect(result.current.currentSessionId).toBeNull()
+
+        // B gets its own session instead of being rebound to A.
+        await waitFor(() => expect(createCalls).toEqual(["A", "B"]))
+        await act(async () => {
+            resolveSecondCreate(
+                session({
+                    id: "new-b",
+                    revision: 1,
+                    diagramXml: "B",
+                    messages: [],
+                }),
+            )
+        })
+        const outcome = await newSave
+
+        expect(outcome).toMatchObject({ ok: true, revision: 1 })
+        expect(result.current.currentSessionId).toBe("new-b")
+        expect(result.current.currentSession?.diagramXml).toBe("B")
+    })
+
     it("applies the server revision returned by a version restore", async () => {
         const { provider, saveCalls, gates } = makeProvider()
         const { result } = renderHook(() =>
@@ -516,9 +601,11 @@ describe("useSessionManager save queue", () => {
         await waitFor(() => expect(result.current.isLoading).toBe(false))
         expect(result.current.currentSession?.revision).toBe(3)
 
-        act(() => {
-            result.current.applyRestoredVersion("RESTORED", 6)
+        let restored!: SessionData | null
+        await act(async () => {
+            restored = await result.current.restoreVersion(1)
         })
+        expect(restored?.diagramXml).toBe("RESTORED")
         expect(result.current.currentSession?.revision).toBe(6)
         expect(result.current.currentSession?.diagramXml).toBe("RESTORED")
 
@@ -541,6 +628,40 @@ describe("useSessionManager save queue", () => {
         })
         await save
         expect(result.current.currentSession?.revision).toBe(7)
+    })
+
+    it("drops queued saves before restoring a version", async () => {
+        const { provider, saveCalls, gates } = makeProvider()
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: "d1", provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let first!: Promise<SaveOutcome>
+        let second!: Promise<SaveOutcome>
+        act(() => {
+            first = result.current.saveCurrentSession(DATA_A)
+            second = result.current.saveCurrentSession(DATA_B)
+        })
+        expect(saveCalls).toHaveLength(1)
+
+        let restorePromise!: Promise<SessionData | null>
+        act(() => {
+            restorePromise = result.current.restoreVersion(1)
+        })
+
+        // The restore waits for the active save, then discards the queued one.
+        await act(async () => {
+            gates[0].resolve({ ok: true, revision: 4, updatedAt: 10 })
+        })
+        await first
+        const restored = await restorePromise
+
+        expect(await second).toMatchObject({ ok: false })
+        expect(saveCalls).toHaveLength(1)
+        expect(restored?.diagramXml).toBe("RESTORED")
+        expect(result.current.currentSession?.revision).toBe(6)
+        expect(result.current.currentSession?.diagramXml).toBe("RESTORED")
     })
 
     it("reports a failed save without clearing the session, then succeeds on retry", async () => {

@@ -667,13 +667,16 @@ export default function ChatPanel({
             // Only capture thumbnail if there's a meaningful diagram (not just empty template)
             const hasRealDiagram = isRealDiagram(currentDiagramXml)
             let thumbnailDataUrl: string | undefined
+            let thumbnailXml: string | undefined
+            let thumbnailCapturedAt: number | undefined
             if (hasRealDiagram && options.withThumbnail) {
                 const freshThumb = await getThumbnailSvg()
                 if (freshThumb) {
                     latestSvgRef.current = freshThumb
                     thumbnailDataUrl = freshThumb
-                    thumbnailXmlRef.current = currentDiagramXml
-                    thumbnailCapturedAtRef.current = Date.now()
+                    // Do not advance the baseline until the save succeeds.
+                    thumbnailXml = currentDiagramXml
+                    thumbnailCapturedAt = Date.now()
                 } else if (latestSvgRef.current) {
                     // Use cached thumbnail only if we have a real diagram.
                     // Do not advance the baseline: the next save should retry.
@@ -685,12 +688,39 @@ export default function ChatPanel({
                 xmlSnapshots: Array.from(xmlSnapshotsRef.current.entries()),
                 diagramXml: currentDiagramXml,
                 thumbnailDataUrl,
+                thumbnailXml,
+                thumbnailCapturedAt,
                 diagramHistory,
                 createVersion: options.createVersion,
                 versionLabel: options.versionLabel,
             }
         },
         [diagramHistory, getThumbnailSvg],
+    )
+
+    // Confirm a generated thumbnail only after the save that uploaded it
+    // succeeded. A failed save leaves the previous baseline so it retries.
+    const commitThumbnailBaseline = useCallback(
+        (data: { thumbnailXml?: string; thumbnailCapturedAt?: number }) => {
+            if (!data.thumbnailXml || !data.thumbnailCapturedAt) return
+            // A newer edit already happened - do not claim its XML was
+            // represented by this older thumbnail.
+            if (data.thumbnailXml !== chartXMLRef.current) return
+            thumbnailXmlRef.current = data.thumbnailXml
+            thumbnailCapturedAtRef.current = data.thumbnailCapturedAt
+        },
+        [],
+    )
+
+    const retryThumbnailAfterFailedSave = useCallback(
+        (data: { thumbnailXml?: string }) => {
+            if (!data.thumbnailXml) return
+            if (data.thumbnailXml !== chartXMLRef.current) return
+            // The thumbnail was generated but not persisted. Clear the
+            // throttle so the next save retries immediately.
+            thumbnailCapturedAtRef.current = 0
+        },
+        [],
     )
 
     // Restore messages and XML snapshots from session manager on mount
@@ -849,8 +879,13 @@ export default function ChatPanel({
                         sessionData,
                         scheduledForSessionId,
                     )
-                    if (outcome.ok && createVersion) {
-                        pendingVersionRef.current = false
+                    if (outcome.ok) {
+                        commitThumbnailBaseline(sessionData)
+                        if (createVersion) {
+                            pendingVersionRef.current = false
+                        }
+                    } else {
+                        retryThumbnailAfterFailedSave(sessionData)
                     }
                 }
             } catch (error) {
@@ -871,6 +906,8 @@ export default function ChatPanel({
         sessionIsAvailable,
         currentSessionId,
         buildSessionData,
+        commitThumbnailBaseline,
+        retryThumbnailAfterFailedSave,
     ])
 
     // Update URL when a new session is created (first message sent)
@@ -907,7 +944,9 @@ export default function ChatPanel({
                     const sessionData = await buildSessionData({
                         withThumbnail: true,
                     })
-                    await sessionManager.saveCurrentSession(sessionData)
+                    const outcome =
+                        await sessionManager.saveCurrentSession(sessionData)
+                    if (outcome.ok) commitThumbnailBaseline(sessionData)
                 } catch (error) {
                     console.error(
                         "Failed to save session on visibility change:",
@@ -923,7 +962,7 @@ export default function ChatPanel({
                 "visibilitychange",
                 handleVisibilityChange,
             )
-    }, [sessionManager, buildSessionData])
+    }, [sessionManager, buildSessionData, commitThumbnailBaseline])
 
     const onFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault()
@@ -1034,7 +1073,9 @@ export default function ChatPanel({
                 const sessionData = await buildSessionData({
                     withThumbnail: true,
                 })
-                await sessionManager.saveCurrentSession(sessionData)
+                const outcome =
+                    await sessionManager.saveCurrentSession(sessionData)
+                if (outcome.ok) commitThumbnailBaseline(sessionData)
             }
 
             // Switch to selected session
@@ -1058,7 +1099,14 @@ export default function ChatPanel({
                 router.replace(`?session=${sessionId}`, { scroll: false })
             }
         },
-        [sessionManager, messages, buildSessionData, syncUIWithSession, router],
+        [
+            sessionManager,
+            messages,
+            buildSessionData,
+            commitThumbnailBaseline,
+            syncUIWithSession,
+            router,
+        ],
     )
 
     // Handle session deletion from history dropdown
@@ -1080,7 +1128,8 @@ export default function ChatPanel({
         // Save current session before creating new one
         if (sessionManager.isAvailable && messages.length > 0) {
             const sessionData = await buildSessionData({ withThumbnail: true })
-            await sessionManager.saveCurrentSession(sessionData)
+            const outcome = await sessionManager.saveCurrentSession(sessionData)
+            if (outcome.ok) commitThumbnailBaseline(sessionData)
             // Refresh sessions list to ensure dropdown shows the saved session
             await sessionManager.refreshSessions()
         }
@@ -1123,6 +1172,7 @@ export default function ChatPanel({
         router,
         dict.dialogs.clearSuccess,
         buildSessionData,
+        commitThumbnailBaseline,
         setDiagramHistory,
         pathname,
     ])
@@ -1188,20 +1238,19 @@ export default function ChatPanel({
     )
 
     const handleRestoreVersion = useCallback(
-        (xml: string, revision: number) => {
-            // The restore endpoint already advanced the server revision.
-            // Adopt it before the next autosave, otherwise that PATCH uses the
-            // old revision and surfaces a false 409 conflict.
-            sessionManager.applyRestoredVersion(xml, revision)
-            onDisplayChart(xml, true)
-            chartXMLRef.current = xml
+        async (version: number) => {
+            // The session manager settles the save queue, performs the restore
+            // and adopts the returned revision before autosave resumes.
+            const restored = await sessionManager.restoreVersion(version)
+            if (!restored) throw new Error("Failed to restore version")
+            onDisplayChart(restored.diagramXml, true)
+            chartXMLRef.current = restored.diagramXml
             justLoadedSessionRef.current = false
             // Restoring is a user action - end hydration so the restored
             // state is persisted on the next autosave.
             hydrationXmlRef.current = null
-            toast.success(dict.diagrams.saved)
         },
-        [sessionManager, onDisplayChart, dict.diagrams.saved],
+        [sessionManager, onDisplayChart],
     )
 
     const handleSaveVersion = useCallback(async () => {
@@ -1212,12 +1261,16 @@ export default function ChatPanel({
             versionLabel: "Manual save",
         })
         if (outcome.ok) {
+            commitThumbnailBaseline(sessionData)
             toast.success(dict.diagrams.saveVersion)
         } else {
+            retryThumbnailAfterFailedSave(sessionData)
             toast.error(dict.diagrams.saveError)
         }
     }, [
         buildSessionData,
+        commitThumbnailBaseline,
+        retryThumbnailAfterFailedSave,
         sessionManager,
         dict.diagrams.saveVersion,
         dict.diagrams.saveError,

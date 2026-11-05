@@ -240,6 +240,26 @@ export function createServerStorageProvider(): SessionStorageProvider {
                 throw new Error(await parseError(response))
             }
         },
+        async restoreVersion(
+            id: string,
+            revision: number,
+        ): Promise<{ diagramXml: string; revision: number }> {
+            const response = await fetch(
+                getApiEndpoint(`/api/diagrams/${id}/versions/${revision}`),
+                { method: "POST" },
+            )
+            if (!response.ok) {
+                throw new Error(await parseError(response))
+            }
+            const data = (await response.json()) as {
+                diagramXml: string
+                revision: number
+            }
+            return {
+                diagramXml: data.diagramXml,
+                revision: data.revision,
+            }
+        },
         async duplicate(id: string): Promise<ChatSession | null> {
             const response = await fetch(getApiEndpoint("/api/diagrams"), {
                 method: "POST",

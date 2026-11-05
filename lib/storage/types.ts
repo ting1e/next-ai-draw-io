@@ -40,6 +40,11 @@ export interface SessionStorageProvider {
     delete(id: string): Promise<void>
     rename(id: string, title: string): Promise<void>
     duplicate(id: string): Promise<ChatSession | null>
+    /** Server-only: restore a snapshot and return the new revision. */
+    restoreVersion?(
+        id: string,
+        revision: number,
+    ): Promise<{ diagramXml: string; revision: number }>
 }
 
 export function toSessionData(session: ChatSession) {

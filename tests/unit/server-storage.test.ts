@@ -109,6 +109,26 @@ describe("ServerStorage provider", () => {
         }
     })
 
+    it("restores a version through the version endpoint", async () => {
+        fetchMock.mockResolvedValueOnce(
+            jsonResponse({
+                ok: true,
+                revision: 6,
+                diagramXml: "<mxfile>restored</mxfile>",
+            }),
+        )
+
+        const restored = await provider.restoreVersion?.("diagram-1", 2)
+        expect(restored).toEqual({
+            diagramXml: "<mxfile>restored</mxfile>",
+            revision: 6,
+        })
+
+        const [url, init] = fetchMock.mock.calls[0]
+        expect(String(url)).toContain("/api/diagrams/diagram-1/versions/2")
+        expect(init.method).toBe("POST")
+    })
+
     it("treats 404 as a missing session on get", async () => {
         fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }))
         await expect(provider.get("missing")).resolves.toBeNull()
