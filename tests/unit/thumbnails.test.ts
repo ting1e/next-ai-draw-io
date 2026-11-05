@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+    nextThumbnailBaseline,
     shouldRefreshThumbnail,
     THUMBNAIL_REFRESH_INTERVAL_MS,
 } from "@/lib/thumbnails"
@@ -59,5 +60,47 @@ describe("shouldRefreshThumbnail", () => {
                 elapsedMs: THUMBNAIL_REFRESH_INTERVAL_MS,
             }),
         ).toBe(false)
+    })
+})
+
+describe("nextThumbnailBaseline", () => {
+    const baseline = {
+        xml: "<mxfile>old</mxfile>",
+        capturedAt: 1_000,
+    }
+    const currentXml = "<mxfile>current</mxfile>"
+    const data = {
+        thumbnailXml: currentXml,
+        thumbnailCapturedAt: 2_000,
+    }
+
+    it("commits the generated thumbnail only after a successful save", () => {
+        expect(nextThumbnailBaseline(baseline, currentXml, data, true)).toEqual(
+            { xml: currentXml, capturedAt: 2_000 },
+        )
+    })
+
+    it("keeps the old baseline on failure and retries on the next save", () => {
+        const failed = nextThumbnailBaseline(baseline, currentXml, data, false)
+        expect(failed).toEqual({ xml: baseline.xml, capturedAt: 0 })
+
+        const retried = nextThumbnailBaseline(
+            failed,
+            currentXml,
+            { thumbnailXml: currentXml, thumbnailCapturedAt: 3_000 },
+            true,
+        )
+        expect(retried).toEqual({ xml: currentXml, capturedAt: 3_000 })
+    })
+
+    it("ignores a thumbnail that belongs to an older edit", () => {
+        expect(
+            nextThumbnailBaseline(
+                baseline,
+                "<mxfile>newer</mxfile>",
+                data,
+                true,
+            ),
+        ).toBe(baseline)
     })
 })

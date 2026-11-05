@@ -30,6 +30,37 @@ export function shouldRefreshThumbnail({
     return elapsedMs >= intervalMs
 }
 
+export interface ThumbnailBaseline {
+    xml: string | null
+    capturedAt: number
+}
+
+/**
+ * Applies the result of a save to the thumbnail baseline. A generated
+ * thumbnail may only become the baseline once the save that uploaded it
+ * succeeded. On failure the XML is kept but the throttle is cleared so the
+ * next save regenerates it immediately.
+ */
+export function nextThumbnailBaseline(
+    baseline: ThumbnailBaseline,
+    currentXml: string,
+    data: { thumbnailXml?: string; thumbnailCapturedAt?: number },
+    saved: boolean,
+): ThumbnailBaseline {
+    if (!data.thumbnailXml || data.thumbnailXml !== currentXml) {
+        return baseline
+    }
+    if (saved) {
+        if (!data.thumbnailCapturedAt) return baseline
+        return {
+            xml: data.thumbnailXml,
+            capturedAt: data.thumbnailCapturedAt,
+        }
+    }
+    if (baseline.capturedAt === 0) return baseline
+    return { xml: baseline.xml, capturedAt: 0 }
+}
+
 /**
  * Converts an SVG/data image URL into a PNG data URL using an offscreen
  * canvas. Returns null when the source cannot be rasterized (e.g. tainted

@@ -664,6 +664,190 @@ describe("useSessionManager save queue", () => {
         expect(result.current.currentSession?.diagramXml).toBe("RESTORED")
     })
 
+    it("restores from the latest session snapshot after an active save", async () => {
+        const saveGate = deferred()
+        const provider: SessionStorageProvider = {
+            kind: "server",
+            isAvailable: () => true,
+            list: async () => [],
+            get: async (id) =>
+                session({
+                    id,
+                    revision: 3,
+                    title: "New Chat",
+                    messages: [USER_MESSAGE],
+                }),
+            create: async () => session({}),
+            save: async () => saveGate.promise,
+            delete: async () => {},
+            rename: async () => {},
+            duplicate: async () => null,
+            restoreVersion: async () => ({
+                diagramXml: "RESTORED",
+                revision: 6,
+            }),
+        }
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: "d1", provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        const updatedMessage = {
+            id: "m2",
+            role: "user" as const,
+            parts: [{ type: "text" as const, text: "updated message" }],
+        }
+        let save!: Promise<SaveOutcome>
+        act(() => {
+            save = result.current.saveCurrentSession({
+                messages: [updatedMessage],
+                xmlSnapshots: [],
+                diagramXml: "EDIT",
+                thumbnailDataUrl: "data:image/png;base64,AAAA",
+            })
+        })
+
+        let restore!: Promise<SessionData | null>
+        act(() => {
+            restore = result.current.restoreVersion(1)
+        })
+
+        await act(async () => {
+            saveGate.resolve({ ok: true, revision: 4, updatedAt: 10 })
+        })
+        await save
+        const restored = await restore
+
+        // The restore result must be based on the post-save session, not the
+        // stale snapshot captured before awaiting the active save.
+        expect(restored?.diagramXml).toBe("RESTORED")
+        expect(restored?.revision).toBe(6)
+        expect(restored?.messages).toEqual([updatedMessage])
+        expect(restored?.thumbnailDataUrl).toBe("data:image/png;base64,AAAA")
+        expect(result.current.currentSession?.title).toBe("updated message")
+    })
+
+    it("only locks saves for the session being restored", async () => {
+        let resolveRestore!: (value: {
+            diagramXml: string
+            revision: number
+        }) => void
+        const restoreGate = new Promise<{
+            diagramXml: string
+            revision: number
+        }>((resolve) => {
+            resolveRestore = resolve
+        })
+        const savedSessionIds: string[] = []
+        const provider: SessionStorageProvider = {
+            kind: "server",
+            isAvailable: () => true,
+            list: async () => [],
+            get: async (id) =>
+                session({
+                    id,
+                    revision: id === "d1" ? 3 : 7,
+                    diagramXml: id === "d1" ? "A" : "B",
+                }),
+            create: async () => session({}),
+            save: async (s) => {
+                savedSessionIds.push(s.id)
+                return { ok: true, revision: (s.revision ?? 0) + 1 }
+            },
+            delete: async () => {},
+            rename: async () => {},
+            duplicate: async () => null,
+            restoreVersion: async () => restoreGate,
+        }
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: "d1", provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let restore!: Promise<SessionData | null>
+        act(() => {
+            restore = result.current.restoreVersion(1)
+        })
+        await act(async () => {
+            await result.current.switchSession("d2")
+        })
+
+        // d2 is not the session being restored, so its save must proceed.
+        let otherSave!: Promise<SaveOutcome>
+        act(() => {
+            otherSave = result.current.saveCurrentSession(DATA_A)
+        })
+        await expect(otherSave).resolves.toMatchObject({ ok: true })
+        expect(savedSessionIds).toEqual(["d2"])
+
+        await act(async () => {
+            resolveRestore({ diagramXml: "RESTORED", revision: 6 })
+        })
+        await expect(restore).resolves.toBeNull()
+        expect(result.current.currentSessionId).toBe("d2")
+        expect(result.current.currentSession?.diagramXml).toBe("A")
+    })
+
+    it("does not steal the current session when a conflict copy finishes late", async () => {
+        let resolveCopy!: (value: ChatSession) => void
+        const copyGate = new Promise<ChatSession>((resolve) => {
+            resolveCopy = resolve
+        })
+        const provider: SessionStorageProvider = {
+            kind: "server",
+            isAvailable: () => true,
+            list: async () => [],
+            get: async (id) =>
+                session({
+                    id,
+                    revision: id === "d1" ? 3 : 7,
+                    diagramXml: id === "d1" ? "A" : "B",
+                }),
+            create: async () => copyGate,
+            save: async () => ({
+                ok: false,
+                error: "conflict",
+                server: session({ id: "d1", revision: 4 }),
+            }),
+            delete: async () => {},
+            rename: async () => {},
+            duplicate: async () => null,
+            restoreVersion: async () => ({
+                diagramXml: "RESTORED",
+                revision: 6,
+            }),
+        }
+        const { result } = renderHook(() =>
+            useSessionManager({ initialSessionId: "d1", provider }),
+        )
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        await act(async () => {
+            await result.current.saveCurrentSession(DATA_A)
+        })
+        expect(result.current.conflict).not.toBeNull()
+
+        let copy!: Promise<SessionData | null>
+        act(() => {
+            copy = result.current.resolveConflictSaveCopy()
+        })
+        await act(async () => {
+            await result.current.switchSession("d2")
+        })
+        await act(async () => {
+            resolveCopy(
+                session({
+                    id: "copy-1",
+                    revision: 1,
+                    diagramXml: "COPY",
+                }),
+            )
+        })
+
+        await expect(copy).resolves.toBeNull()
+        expect(result.current.currentSessionId).toBe("d2")
+    })
+
     it("reports a failed save without clearing the session, then succeeds on retry", async () => {
         let attempts = 0
         const provider: SessionStorageProvider = {

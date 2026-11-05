@@ -18,6 +18,7 @@ export default function Home() {
         drawioRef,
         handleDiagramExport,
         handleDiagramAutoSave,
+        exportChannelEpoch,
         onDrawioLoad,
         resetDrawioReady,
     } = useDiagram()
@@ -190,7 +191,7 @@ export default function Home() {
                                     className={`h-full w-full ${isDrawioReady ? "" : "invisible absolute inset-0"}`}
                                 >
                                     <DrawIoEmbed
-                                        key={`${drawioUi}-${darkMode}-${currentLang}-${isElectron}`}
+                                        key={`${drawioUi}-${darkMode}-${currentLang}-${isElectron}-${exportChannelEpoch}`}
                                         ref={drawioRef}
                                         autosave
                                         onAutoSave={handleDiagramAutoSave}

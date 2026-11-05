@@ -33,6 +33,8 @@ interface DiagramContextType {
     ) => void
     getThumbnailSvg: () => Promise<string | null>
     captureValidationPng: () => Promise<string | null>
+    /** Changes when the iframe is recreated after an export timeout. */
+    exportChannelEpoch: number
     isDrawioReady: boolean
     onDrawioLoad: () => void
     resetDrawioReady: () => void
@@ -52,9 +54,15 @@ function isSvgExportData(data: string | undefined): data is string {
 
 type DrawioExportFormat = "svg" | "xmlsvg" | "png"
 
+// A recreated iframe normally signals `load` quickly. If it stays silent
+// (for example the embed is unreachable), resume the queue so queued exports
+// can time out instead of blocking saves forever.
+const EXPORT_RECOVERY_TIMEOUT_MS = 5_000
+
 interface ExportTask {
     format: DrawioExportFormat
     timeoutMs: number
+    saveToHistory: boolean
     onData: (data: EventExport) => void
     onTimeout?: () => void
 }
@@ -66,6 +74,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         { svg: string; xml: string }[]
     >([])
     const [isDrawioReady, setIsDrawioReady] = useState(false)
+    const [exportChannelEpoch, setExportChannelEpoch] = useState(0)
     const [showSaveDialog, setShowSaveDialog] = useState(false)
     const hasCalledOnLoadRef = useRef(false)
     const drawioRef = useRef<DrawIoEmbedRef | null>(null)
@@ -78,15 +87,28 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         task: ExportTask
         timer: ReturnType<typeof setTimeout>
     } | null>(null)
-    // Track if we're expecting an export for history (user-initiated)
-    const expectHistoryExportRef = useRef<boolean>(false)
+    // A timed-out export may still send a late response. Recreate the iframe
+    // and pause the queue until the fresh instance has loaded.
+    const exportRecoveryPendingRef = useRef(false)
+    const exportRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    )
     // Track latest chartXML for restoration after remount
     const chartXMLRef = useRef<string>("")
+    // Mirrors isDrawioReady synchronously. DrawIoEmbed registers its message
+    // listener once, so a remounted iframe would otherwise keep calling an
+    // autosave handler that captured the pre-remount "not ready" state.
+    const isDrawioReadyRef = useRef(false)
 
     const onDrawioLoad = () => {
         // Only set ready state once to prevent infinite loops
         if (hasCalledOnLoadRef.current) return
         hasCalledOnLoadRef.current = true
+        isDrawioReadyRef.current = true
+        if (exportRecoveryTimerRef.current) {
+            clearTimeout(exportRecoveryTimerRef.current)
+            exportRecoveryTimerRef.current = null
+        }
         setIsDrawioReady(true)
         // Restore diagram after remount (e.g., theme/UI change)
         if (drawioRef.current && isRealDiagram(chartXMLRef.current)) {
@@ -96,6 +118,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
 
     const resetDrawioReady = () => {
         hasCalledOnLoadRef.current = false
+        isDrawioReadyRef.current = false
         setIsDrawioReady(false)
     }
 
@@ -104,7 +127,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         chartXMLRef.current = chartXML
     }, [chartXML])
 
-    const handleXmlExportData = (data: EventExport) => {
+    const handleXmlExportData = (data: EventExport, saveToHistory: boolean) => {
         // Don't write chartXML here: exports don't change the diagram, and
         // data.xml from xmlsvg exports has compressed <diagram> payloads that
         // would break edit_diagram/display_diagram. Autosave keeps chartXML
@@ -115,7 +138,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         // Only add to history if this was a user-initiated export
         // Limit to 20 entries to prevent memory leaks during long sessions
         const MAX_HISTORY_SIZE = 20
-        if (expectHistoryExportRef.current) {
+        if (saveToHistory) {
             setDiagramHistory((prev) => {
                 const newHistory = [
                     ...prev,
@@ -127,7 +150,6 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                 // Keep only the last MAX_HISTORY_SIZE entries (circular buffer)
                 return newHistory.slice(-MAX_HISTORY_SIZE)
             })
-            expectHistoryExportRef.current = false
         }
 
         if (resolverRef.current) {
@@ -137,7 +159,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     }
 
     const startNextExport = () => {
-        if (activeExportRef.current) return
+        if (activeExportRef.current || exportRecoveryPendingRef.current) return
         const task = exportQueueRef.current.shift()
         if (!task) return
 
@@ -155,7 +177,22 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             try {
                 task.onTimeout?.()
             } finally {
-                startNextExport()
+                // The old iframe may still answer. Recreate it so a late
+                // response cannot be consumed by the next queued task.
+                exportRecoveryPendingRef.current = true
+                hasCalledOnLoadRef.current = false
+                isDrawioReadyRef.current = false
+                setIsDrawioReady(false)
+                setExportChannelEpoch((epoch) => epoch + 1)
+                if (exportRecoveryTimerRef.current) {
+                    clearTimeout(exportRecoveryTimerRef.current)
+                }
+                exportRecoveryTimerRef.current = setTimeout(() => {
+                    exportRecoveryTimerRef.current = null
+                    if (!exportRecoveryPendingRef.current) return
+                    exportRecoveryPendingRef.current = false
+                    startNextExport()
+                }, EXPORT_RECOVERY_TIMEOUT_MS)
             }
         }, task.timeoutMs)
 
@@ -175,16 +212,24 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         startNextExport()
     }
 
+    // Resume the queue only after the recreated iframe has loaded.
+    useEffect(() => {
+        if (!isDrawioReady || !exportRecoveryPendingRef.current) return
+        exportRecoveryPendingRef.current = false
+        if (exportRecoveryTimerRef.current) {
+            clearTimeout(exportRecoveryTimerRef.current)
+            exportRecoveryTimerRef.current = null
+        }
+        startNextExport()
+    })
+
     const requestXmlExport = (saveToHistory: boolean) => {
         if (!drawioRef.current) return
-        if (saveToHistory) expectHistoryExportRef.current = true
         requestExport({
             format: "xmlsvg",
             timeoutMs: 10_000,
-            onData: handleXmlExportData,
-            onTimeout: () => {
-                if (saveToHistory) expectHistoryExportRef.current = false
-            },
+            saveToHistory,
+            onData: (data) => handleXmlExportData(data, saveToHistory),
         })
     }
 
@@ -209,6 +254,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             requestExport({
                 format: "xmlsvg",
                 timeoutMs: 3000,
+                saveToHistory: false,
                 onData: (data) => {
                     const svgData = isSvgExportData(data.data)
                         ? data.data
@@ -238,6 +284,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             requestExport({
                 format: "png",
                 timeoutMs: 5000,
+                saveToHistory: false,
                 onData: (data) => {
                     finish(
                         data.data?.startsWith("data:image/png")
@@ -289,6 +336,10 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     }
 
     const handleDiagramExport = (data: EventExport) => {
+        // The iframe is being replaced; anything arriving now belongs to the
+        // timed-out channel.
+        if (exportRecoveryPendingRef.current) return
+
         const active = activeExportRef.current
         if (active) {
             // A late response for a previously timed-out request must not be
@@ -310,7 +361,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         // surfaced as diagram history. Raster formats have no XML to extract.
         if (data.format === "png" || data.format === "xmlpng") return
         try {
-            handleXmlExportData(data)
+            handleXmlExportData(data, false)
         } catch (error) {
             console.error("Failed to process diagram export:", error)
         }
@@ -319,8 +370,10 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
     const handleDiagramAutoSave = (data: { xml?: string }) => {
         if (!data?.xml) return
         // Don't overwrite a pending restore - if we have a real diagram in state
-        // but DrawIO isn't ready yet, it means we're waiting to restore
-        if (!isDrawioReady && isRealDiagram(chartXML)) {
+        // but DrawIO isn't ready yet, it means we're waiting to restore.
+        // Read refs instead of render values because the embed installs this
+        // listener only once, including across iframe recreations.
+        if (!isDrawioReadyRef.current && isRealDiagram(chartXMLRef.current)) {
             return
         }
         setChartXML(data.xml)
@@ -352,6 +405,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         requestExport({
             format: drawioFormat,
             timeoutMs: 10_000,
+            saveToHistory: false,
             onData: (data) => {
                 const exportData = data.data
                 const fullDiagramXML = data.xml
@@ -465,6 +519,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                 saveDiagramToFile,
                 getThumbnailSvg,
                 captureValidationPng,
+                exportChannelEpoch,
                 isDrawioReady,
                 onDrawioLoad,
                 resetDrawioReady,

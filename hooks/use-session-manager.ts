@@ -142,9 +142,12 @@ export function useSessionManager(
     // switch, delete, URL navigation, conflict resolution). Async work from an
     // older generation may still finish, but it must not become current.
     const sessionGenerationRef = useRef(0)
-    // Version restore is coordinated with the save queue: no new save may be
-    // enqueued while the restore request is running.
-    const versionRestoreInProgressRef = useRef(false)
+    // Version restore only blocks saves for the session being restored. Other
+    // sessions (for example after the user switches away) keep saving.
+    const restoreLockRef = useRef<{
+        sessionId: string
+        generation: number
+    } | null>(null)
 
     const isInitializedRef = useRef(false)
     // Sequence guard for URL changes - prevents out-of-order async resolution
@@ -500,13 +503,6 @@ export function useSessionManager(
             data: SessionData,
             forSessionId?: string | null,
         ): Promise<SaveOutcome> => {
-            if (versionRestoreInProgressRef.current) {
-                return Promise.resolve({
-                    ok: false,
-                    error: "failed",
-                    message: "Version restore in progress",
-                })
-            }
             if (
                 forSessionId !== undefined &&
                 forSessionId !== currentSessionIdRef.current
@@ -529,6 +525,19 @@ export function useSessionManager(
             // dropped if the user switches sessions before it runs.
             const targetSessionId = currentSessionIdRef.current
             const targetGeneration = sessionGenerationRef.current
+
+            const restoreLock = restoreLockRef.current
+            if (
+                restoreLock &&
+                restoreLock.sessionId === targetSessionId &&
+                restoreLock.generation === targetGeneration
+            ) {
+                return Promise.resolve({
+                    ok: false,
+                    error: "failed",
+                    message: "Version restore in progress",
+                })
+            }
 
             const startSave = (
                 payload: SessionData,
@@ -635,14 +644,21 @@ export function useSessionManager(
     // freshly restored revision as soon as the restore response returns.
     const restoreVersion = useCallback(
         async (version: number): Promise<SessionData | null> => {
-            const current = currentSessionRef.current
-            if (!current || !provider?.restoreVersion) return null
+            const initial = currentSessionRef.current
+            if (!initial || !provider?.restoreVersion) return null
 
-            versionRestoreInProgressRef.current = true
+            const restoreSessionId = initial.id
+            const restoreGeneration = sessionGenerationRef.current
+            restoreLockRef.current = {
+                sessionId: restoreSessionId,
+                generation: restoreGeneration,
+            }
+
             try {
-                // Drop anything already waiting to save.
+                // Drop only queued saves for the session being restored. A
+                // save for another session may proceed normally.
                 const queued = queuedSaveRef.current
-                if (queued) {
+                if (queued && queued.targetSessionId === restoreSessionId) {
                     queuedSaveRef.current = null
                     queued.resolve({
                         ok: false,
@@ -651,20 +667,36 @@ export function useSessionManager(
                     })
                 }
 
-                // Wait for the in-flight PATCH/create to settle so the restore
-                // is the last write to reach the server.
+                // Wait for the in-flight save so its result is reflected in
+                // the snapshot used below.
                 const active = activeSaveRef.current
                 if (active) {
                     await active.catch(() => {})
                 }
 
+                // The active save may have updated messages/title/thumbnail.
+                // Re-read instead of restoring an old pre-save snapshot.
+                const latest = currentSessionRef.current
+                if (
+                    !latest ||
+                    latest.id !== restoreSessionId ||
+                    currentSessionIdRef.current !== restoreSessionId
+                ) {
+                    return null
+                }
+
                 const restored = await provider.restoreVersion(
-                    current.id,
+                    latest.id,
                     version,
                 )
 
                 // The user may have switched conversations while waiting.
-                if (currentSessionIdRef.current !== current.id) return null
+                if (currentSessionIdRef.current !== restoreSessionId) {
+                    return null
+                }
+
+                const current = currentSessionRef.current
+                if (!current || current.id !== restoreSessionId) return null
 
                 const restoredSession: ChatSession = {
                     ...current,
@@ -677,7 +709,12 @@ export function useSessionManager(
                 await refreshSessions()
                 return toSessionData(restoredSession)
             } finally {
-                versionRestoreInProgressRef.current = false
+                if (
+                    restoreLockRef.current?.sessionId === restoreSessionId &&
+                    restoreLockRef.current.generation === restoreGeneration
+                ) {
+                    restoreLockRef.current = null
+                }
             }
         },
         [provider, applyCurrentSession, updateMetadataList, refreshSessions],
@@ -726,6 +763,10 @@ export function useSessionManager(
     const resolveConflictSaveCopy = useCallback(async () => {
         const pending = pendingSaveRef.current
         if (!pending || !provider) return null
+
+        // Creating the copy is async. If the user switches conversations in
+        // the meantime, its completion must not steal the new current session.
+        const generation = sessionGenerationRef.current
         const copy = await provider.create({
             title: `${pending.session.title} (conflict copy)`,
             messages: pending.session.messages,
@@ -734,6 +775,12 @@ export function useSessionManager(
             thumbnailDataUrl: pending.session.thumbnailDataUrl,
         })
         pendingSaveRef.current = null
+
+        if (generation !== sessionGenerationRef.current) {
+            await refreshSessions()
+            return null
+        }
+
         bumpSessionGeneration()
         applyCurrentSession(copy)
         setConflict(null)

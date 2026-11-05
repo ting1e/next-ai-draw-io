@@ -3,9 +3,23 @@ import type { EventExport } from "react-drawio"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DiagramProvider, useDiagram } from "@/contexts/diagram-context"
 
+vi.mock("@/lib/utils", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/lib/utils")>()
+    return {
+        ...actual,
+        extractDiagramXML: (data: string) => {
+            if (data.includes("T05F")) return "<mxfile>one</mxfile>"
+            if (data.includes("VFdP")) return "<mxfile>two</mxfile>"
+            return "<mxfile>normal</mxfile>"
+        },
+    }
+})
+
 const SVG_DATA = "data:image/svg+xml;base64,PHN2Zy8+"
 const PNG_DATA =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+const SVG_ONE = "data:image/svg+xml;base64,T05F"
+const SVG_TWO = "data:image/svg+xml;base64,VFdP"
 const DIAGRAM_XML = `<mxfile><diagram name="Page-1" id="page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" value="Export queue fixture with enough content to count as a real diagram" vertex="1" parent="1"><mxGeometry x="100" y="100" width="200" height="80" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>`
 
 function exportEvent(data: string, format: "xmlsvg" | "png"): EventExport {
@@ -78,6 +92,147 @@ describe("DiagramProvider export queue", () => {
         })
 
         await expect(second).resolves.toBe(SVG_DATA)
+    })
+
+    it("recreates the export channel after a timeout and ignores late responses", async () => {
+        vi.useFakeTimers()
+        const { result, exportDiagram } = setup()
+
+        let timedOut!: Promise<string | null>
+        act(() => {
+            timedOut = result.current.getThumbnailSvg()
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(1)
+
+        act(() => {
+            vi.advanceTimersByTime(3000)
+        })
+        await expect(timedOut).resolves.toBeNull()
+        expect(result.current.exportChannelEpoch).toBe(1)
+        expect(result.current.isDrawioReady).toBe(false)
+
+        // The next request waits for the fresh iframe.
+        let next!: Promise<string | null>
+        act(() => {
+            next = result.current.getThumbnailSvg()
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(1)
+
+        // A late response from the timed-out channel is discarded.
+        act(() => {
+            result.current.handleDiagramExport(exportEvent(SVG_DATA, "xmlsvg"))
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+            result.current.onDrawioLoad()
+        })
+        await act(async () => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(2)
+
+        act(() => {
+            result.current.handleDiagramExport(exportEvent(SVG_DATA, "xmlsvg"))
+        })
+        await expect(next).resolves.toBe(SVG_DATA)
+    })
+
+    it("resumes the queue when the recreated iframe never loads", async () => {
+        vi.useFakeTimers()
+        const { result, exportDiagram } = setup()
+
+        let timedOut!: Promise<string | null>
+        act(() => {
+            timedOut = result.current.getThumbnailSvg()
+        })
+        act(() => {
+            vi.advanceTimersByTime(3000)
+        })
+        await expect(timedOut).resolves.toBeNull()
+
+        let next!: Promise<string | null>
+        act(() => {
+            next = result.current.getThumbnailSvg()
+        })
+        // Recovery blocks the queue until its deadline, then lets the next
+        // task start (and time out) instead of hanging forever.
+        expect(exportDiagram).toHaveBeenCalledTimes(1)
+        await act(async () => {
+            vi.advanceTimersByTime(5000)
+        })
+        expect(exportDiagram).toHaveBeenCalledTimes(2)
+
+        act(() => {
+            vi.advanceTimersByTime(3000)
+        })
+        await expect(next).resolves.toBeNull()
+    })
+
+    it("accepts autosaves again after the recreated iframe loads", async () => {
+        vi.useFakeTimers()
+        const { result } = setup()
+
+        let timedOut!: Promise<string | null>
+        act(() => {
+            timedOut = result.current.getThumbnailSvg()
+        })
+        act(() => {
+            vi.advanceTimersByTime(3000)
+        })
+        await expect(timedOut).resolves.toBeNull()
+
+        const edited = DIAGRAM_XML.replace(
+            "Export queue fixture",
+            "Edited after remount",
+        )
+        // While the replacement iframe is not ready, a late autosave must not
+        // overwrite the pending restore.
+        act(() => {
+            result.current.handleDiagramAutoSave({ xml: edited })
+        })
+        expect(result.current.chartXML).toBe(DIAGRAM_XML)
+
+        await act(async () => {
+            result.current.onDrawioLoad()
+        })
+        act(() => {
+            result.current.handleDiagramAutoSave({ xml: edited })
+        })
+        expect(result.current.chartXML).toBe(edited)
+    })
+
+    it("records history per export task instead of using a global flag", async () => {
+        const { result } = setup()
+
+        act(() => {
+            result.current.handleExport()
+        })
+        act(() => {
+            result.current.handleDiagramExport(exportEvent(SVG_ONE, "xmlsvg"))
+        })
+        expect(result.current.diagramHistory.map((item) => item.xml)).toEqual([
+            "<mxfile>one</mxfile>",
+        ])
+
+        act(() => {
+            result.current.handleExportWithoutHistory()
+        })
+        act(() => {
+            result.current.handleDiagramExport(exportEvent(SVG_DATA, "xmlsvg"))
+        })
+        expect(result.current.diagramHistory).toHaveLength(1)
+
+        act(() => {
+            result.current.handleExport()
+        })
+        act(() => {
+            result.current.handleDiagramExport(exportEvent(SVG_TWO, "xmlsvg"))
+        })
+        expect(result.current.diagramHistory.map((item) => item.xml)).toEqual([
+            "<mxfile>one</mxfile>",
+            "<mxfile>two</mxfile>",
+        ])
     })
 
     it("serializes SVG and PNG exports instead of racing resolvers", async () => {

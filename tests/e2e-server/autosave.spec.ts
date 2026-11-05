@@ -27,12 +27,14 @@ async function createDiagram(
     context: BrowserContext,
     baseURL: string,
     xml: string,
+    messages?: Array<Record<string, unknown>>,
 ): Promise<{ id: string; revision: number }> {
     const response = await context.request.post(`${baseURL}/api/diagrams`, {
         headers: { Origin: baseURL },
         data: {
             title: `Autosave E2E ${Date.now()}`,
             diagramXml: xml,
+            ...(messages ? { messages } : {}),
         },
     })
     expect(response.ok()).toBeTruthy()
@@ -149,6 +151,7 @@ test.describe("server-storage autosave", () => {
         context,
         page,
     }) => {
+        test.setTimeout(60_000)
         const initial = diagramXml("Original version")
         const created = await createDiagram(context, BASE_URL, initial)
 
@@ -192,8 +195,24 @@ test.describe("server-storage autosave", () => {
             timeout: 15_000,
         })
 
-        // The restore itself reloads Draw.io and may emit its own autosave.
+        // The restore itself reloads Draw.io and triggers an autosave of the
+        // restored XML. A thumbnail export may time out while the external
+        // embed is unreachable, which recreates the iframe and pauses the
+        // export queue. Mark the fresh instance ready, then let that restore
+        // save settle before simulating a user edit on the stable channel.
         await page.waitForTimeout(2000)
+        await emitDrawioEvent(page, "load")
+        await expect
+            .poll(
+                async () =>
+                    (await getDiagram(context, BASE_URL, created.id)).revision,
+                { timeout: 20_000 },
+            )
+            .toBeGreaterThanOrEqual(4)
+
+        await emitDrawioEvent(page, "load")
+        // Let the ready-state render commit before simulating the edit.
+        await page.waitForTimeout(200)
 
         await emitDrawioEvent(
             page,
@@ -212,5 +231,52 @@ test.describe("server-storage autosave", () => {
         await expect(
             page.getByText("This diagram was updated on another device"),
         ).toHaveCount(0)
+    })
+
+    test("keeps the current conversation when the pre-new-chat save fails", async ({
+        context,
+        page,
+    }) => {
+        const conversationMarker = "Keep this conversation visible"
+        const created = await createDiagram(
+            context,
+            BASE_URL,
+            diagramXml("New chat failure fixture"),
+            [
+                {
+                    id: "m1",
+                    role: "user",
+                    parts: [{ type: "text", text: conversationMarker }],
+                },
+            ],
+        )
+
+        await openSession(page, created.id)
+        await expect(page.getByText(conversationMarker)).toBeVisible({
+            timeout: 15_000,
+        })
+
+        let failSaves = false
+        await page.route(`**/api/diagrams/${created.id}`, async (route) => {
+            if (failSaves && route.request().method() === "PATCH") {
+                await route.fulfill({
+                    status: 500,
+                    contentType: "application/json",
+                    body: JSON.stringify({ error: "forced save failure" }),
+                })
+                return
+            }
+            await route.fallback()
+        })
+        failSaves = true
+
+        await page.getByTestId("new-chat-button").click()
+
+        await expect(page.getByText("Save failed").first()).toBeVisible({
+            timeout: 20_000,
+        })
+        // The failed save aborts New Chat: the conversation and its URL stay.
+        await expect(page.getByText(conversationMarker)).toBeVisible()
+        await expect(page).toHaveURL(new RegExp(`[?&]session=${created.id}`))
     })
 })
