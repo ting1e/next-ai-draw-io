@@ -33,6 +33,11 @@ interface DiagramContextType {
     ) => void
     getThumbnailSvg: () => Promise<string | null>
     captureValidationPng: () => Promise<string | null>
+    /**
+     * Direct PNG export used for version previews. Returns a PNG data URL
+     * without going through SVG -> Canvas conversion.
+     */
+    captureVersionPreviewPng: () => Promise<string | null>
     /** Changes when the iframe is recreated after an export timeout. */
     exportChannelEpoch: number
     isDrawioReady: boolean
@@ -280,8 +285,8 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
         })
     }
 
-    // Capture current diagram as PNG for VLM validation
-    const captureValidationPng = async (): Promise<string | null> => {
+    // Capture the current diagram as a PNG using Draw.io's own raster export.
+    const capturePng = async (timeoutMs: number): Promise<string | null> => {
         if (!drawioRef.current) return null
         // Don't export if diagram is empty
         if (!isRealDiagram(chartXMLRef.current)) return null
@@ -296,7 +301,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
 
             requestExport({
                 format: "png",
-                timeoutMs: 5000,
+                timeoutMs,
                 saveToHistory: false,
                 background: true,
                 onData: (data) => {
@@ -310,6 +315,13 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
             })
         })
     }
+
+    // Capture current diagram as PNG for VLM validation
+    const captureValidationPng = () => capturePng(5000)
+
+    // Version previews need a slightly longer budget than validation
+    // snapshots because they are created during an explicit save.
+    const captureVersionPreviewPng = () => capturePng(10_000)
 
     const loadDiagram = (
         chart: string,
@@ -533,6 +545,7 @@ export function DiagramProvider({ children }: { children: React.ReactNode }) {
                 saveDiagramToFile,
                 getThumbnailSvg,
                 captureValidationPng,
+                captureVersionPreviewPng,
                 exportChannelEpoch,
                 isDrawioReady,
                 onDrawioLoad,

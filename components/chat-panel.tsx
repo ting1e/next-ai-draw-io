@@ -44,6 +44,7 @@ import { authClient } from "@/lib/auth/auth-client"
 import { consumeHydrationEcho } from "@/lib/autosave-hydration"
 import { getApiEndpoint } from "@/lib/base-path"
 import { findCachedResponse } from "@/lib/cached-responses"
+import { diagramXmlFingerprint } from "@/lib/diagram-fingerprint"
 import type { DrawioTheme } from "@/lib/drawio-themes"
 import { formatMessage } from "@/lib/i18n/utils"
 import { isPdfFile, isTextFile } from "@/lib/pdf-utils"
@@ -54,6 +55,7 @@ import {
     nextThumbnailBaseline,
     shouldRefreshThumbnail,
     THUMBNAIL_REFRESH_INTERVAL_MS,
+    toSizedPngDataUrl,
 } from "@/lib/thumbnails"
 import type { UrlData } from "@/lib/url-utils"
 import { type FileData, useFileProcessor } from "@/lib/use-file-processor"
@@ -144,6 +146,7 @@ export default function ChatPanel({
         clearDiagram,
         getThumbnailSvg,
         captureValidationPng,
+        captureVersionPreviewPng,
         diagramHistory,
         setDiagramHistory,
         saveDiagramToFile,
@@ -675,20 +678,42 @@ export default function ChatPanel({
             const hasRealDiagram = isRealDiagram(currentDiagramXml)
             let thumbnailDataUrl: string | undefined
             let thumbnailXml: string | undefined
+            let thumbnailXmlFingerprint: string | undefined
             let thumbnailCapturedAt: number | undefined
-            if (hasRealDiagram && options.withThumbnail) {
+            if (hasRealDiagram && options.createVersion) {
+                // Version previews must be generated from the exact XML being
+                // saved. Use Draw.io's direct PNG export instead of the
+                // xmlsvg -> canvas path, and discard the image if the editor
+                // changed while the export was running.
+                const previewPng = await captureVersionPreviewPng()
+                if (previewPng && chartXMLRef.current === currentDiagramXml) {
+                    const sizedPng = await toSizedPngDataUrl(previewPng)
+                    if (sizedPng && chartXMLRef.current === currentDiagramXml) {
+                        thumbnailDataUrl = sizedPng
+                        thumbnailXml = currentDiagramXml
+                        thumbnailXmlFingerprint =
+                            diagramXmlFingerprint(currentDiagramXml)
+                        thumbnailCapturedAt = Date.now()
+                    }
+                }
+            } else if (hasRealDiagram && options.withThumbnail) {
                 const freshThumb = await getThumbnailSvg()
                 if (freshThumb) {
                     latestSvgRef.current = freshThumb
-                    thumbnailDataUrl = freshThumb
-                    // Do not advance the baseline until the save succeeds.
-                    thumbnailXml = currentDiagramXml
-                    thumbnailCapturedAt = Date.now()
-                } else if (latestSvgRef.current) {
-                    // Use cached thumbnail only if we have a real diagram.
-                    // Do not advance the baseline: the next save should retry.
-                    thumbnailDataUrl = latestSvgRef.current
+                    // The user may have edited while the export was running.
+                    // Only pair the image with the XML that was current when
+                    // the save started; otherwise the next save retries.
+                    if (chartXMLRef.current === currentDiagramXml) {
+                        thumbnailDataUrl = freshThumb
+                        // Do not advance the baseline until the save succeeds.
+                        thumbnailXml = currentDiagramXml
+                        thumbnailXmlFingerprint =
+                            diagramXmlFingerprint(currentDiagramXml)
+                        thumbnailCapturedAt = Date.now()
+                    }
                 }
+                // Never reuse latestSvgRef here: it may belong to an older
+                // XML revision. A missing thumbnail is safer than a stale one.
             }
             return {
                 messages: sanitizeMessages(messagesRef.current),
@@ -696,13 +721,14 @@ export default function ChatPanel({
                 diagramXml: currentDiagramXml,
                 thumbnailDataUrl,
                 thumbnailXml,
+                thumbnailXmlFingerprint,
                 thumbnailCapturedAt,
                 diagramHistory,
                 createVersion: options.createVersion,
                 versionLabel: options.versionLabel,
             }
         },
-        [diagramHistory, getThumbnailSvg],
+        [diagramHistory, getThumbnailSvg, captureVersionPreviewPng],
     )
 
     // Every save entry point goes through the same thumbnail baseline logic:
@@ -1282,12 +1308,11 @@ export default function ChatPanel({
     )
 
     const handleSaveVersion = useCallback(async () => {
-        const sessionData = await buildSessionData({ withThumbnail: true })
-        const outcome = await sessionManager.saveCurrentSession({
-            ...sessionData,
+        const sessionData = await buildSessionData({
             createVersion: true,
             versionLabel: "Manual save",
         })
+        const outcome = await sessionManager.saveCurrentSession(sessionData)
         if (applySaveOutcome(sessionData, outcome)) {
             toast.success(dict.diagrams.saveVersion)
         } else {

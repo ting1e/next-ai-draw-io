@@ -147,6 +147,12 @@ export function createServerStorageProvider(): SessionStorageProvider {
                     messages: session.messages,
                     xmlSnapshots: session.xmlSnapshots,
                     ...(thumbnailDataUrl ? { thumbnailDataUrl } : {}),
+                    ...(options?.thumbnailXmlFingerprint
+                        ? {
+                              thumbnailXmlFingerprint:
+                                  options.thumbnailXmlFingerprint,
+                          }
+                        : {}),
                     ...(options?.createVersion
                         ? {
                               createVersion: true,

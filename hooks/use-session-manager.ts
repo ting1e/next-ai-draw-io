@@ -16,6 +16,8 @@ export interface SessionData {
     xmlSnapshots: [number, string][]
     diagramXml: string
     thumbnailDataUrl?: string
+    /** Fingerprint of the XML the uploaded thumbnail was generated from. */
+    thumbnailXmlFingerprint?: string
     diagramHistory?: { svg: string; xml: string }[]
     revision?: number
     /** Force creation of a server-side version snapshot for this save. */
@@ -438,6 +440,7 @@ export function useSessionManager(
                     : await provider.save(session, {
                           createVersion: data.createVersion,
                           versionLabel: data.versionLabel,
+                          thumbnailXmlFingerprint: data.thumbnailXmlFingerprint,
                       })
 
                 if (outcome.ok) {

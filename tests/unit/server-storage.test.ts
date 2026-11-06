@@ -79,6 +79,47 @@ describe("ServerStorage provider", () => {
         expect(body.diagramXml).toBe("<mxfile/>")
     })
 
+    it("sends the thumbnail fingerprint and version options in the PATCH body", async () => {
+        fetchMock.mockResolvedValueOnce(
+            jsonResponse({ revision: 4, updatedAt: 9 }),
+        )
+
+        const outcome = await provider.save(
+            session({
+                thumbnailDataUrl:
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+            }),
+            {
+                createVersion: true,
+                versionLabel: "Manual save",
+                thumbnailXmlFingerprint: "2f-abc123",
+            },
+        )
+
+        expect(outcome.ok).toBe(true)
+        const [url, init] = fetchMock.mock.calls[0]
+        expect(String(url)).toContain("/api/diagrams/diagram-1")
+        expect(init.method).toBe("PATCH")
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(body.baseRevision).toBe(3)
+        expect(body.thumbnailXmlFingerprint).toBe("2f-abc123")
+        expect(body.createVersion).toBe(true)
+        expect(body.versionLabel).toBe("Manual save")
+        expect(body.thumbnailDataUrl).toContain("data:image/png;base64,")
+    })
+
+    it("omits the fingerprint when the client did not capture one", async () => {
+        fetchMock.mockResolvedValueOnce(
+            jsonResponse({ revision: 4, updatedAt: 9 }),
+        )
+
+        await provider.save(session(), { createVersion: true })
+
+        const [, init] = fetchMock.mock.calls[0]
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(body).not.toHaveProperty("thumbnailXmlFingerprint")
+    })
+
     it("surfaces conflicts with the server document", async () => {
         fetchMock.mockResolvedValueOnce(
             jsonResponse(

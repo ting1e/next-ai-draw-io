@@ -28,6 +28,8 @@ export interface SaveOptions {
     /** Force creation of a version snapshot (AI edit finished / explicit save). */
     createVersion?: boolean
     versionLabel?: string
+    /** Fingerprint of the XML the attached thumbnail represents. */
+    thumbnailXmlFingerprint?: string
 }
 
 export interface SessionStorageProvider {

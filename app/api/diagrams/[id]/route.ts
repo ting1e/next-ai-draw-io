@@ -8,6 +8,7 @@ import {
     updateDiagram,
 } from "@/lib/db/diagrams"
 import { createVersion, shouldCreateVersion } from "@/lib/db/versions"
+import { diagramXmlFingerprint } from "@/lib/diagram-fingerprint"
 import { parseImageDataUrl } from "@/lib/images"
 import {
     getMaxRequestBodyBytes,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/validation/diagram"
 import { readJsonBody } from "@/lib/validation/http"
 import { isSameOrigin } from "@/lib/validation/origin"
+import { selectVersionPreview } from "@/lib/version-preview"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -105,6 +107,13 @@ export async function PATCH(request: Request, context: RouteContext) {
         typeof input.thumbnailDataUrl === "string"
             ? parseImageDataUrl(input.thumbnailDataUrl)
             : undefined
+    const versionPreview = selectVersionPreview(
+        image,
+        input.thumbnailXmlFingerprint,
+        input.diagramXml !== undefined
+            ? diagramXmlFingerprint(input.diagramXml)
+            : undefined,
+    )
     const clearThumbnail = input.thumbnailDataUrl === null
     const nextRevision = input.baseRevision + 1
 
@@ -159,8 +168,8 @@ export async function PATCH(request: Request, context: RouteContext) {
                     diagramId: id,
                     revision: result.revision,
                     diagramXml: input.diagramXml,
-                    previewMime: image?.mime ?? null,
-                    previewBlob: image?.buffer ?? null,
+                    previewMime: versionPreview?.mime ?? null,
+                    previewBlob: versionPreview?.buffer ?? null,
                     label: input.versionLabel ?? null,
                 })
             }

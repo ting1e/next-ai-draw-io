@@ -77,6 +77,7 @@ export const updateDiagramSchema = z
         messages: messagesSchema.optional(),
         xmlSnapshots: snapshotsSchema.optional(),
         thumbnailDataUrl: thumbnailDataUrlSchema.nullable().optional(),
+        thumbnailXmlFingerprint: z.string().min(1).max(64).optional(),
         createVersion: z.boolean().optional(),
         versionLabel: z.string().max(100).nullable().optional(),
     })

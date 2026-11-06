@@ -1,6 +1,9 @@
 "use client"
 
 const MAX_THUMBNAIL_DIMENSION = 512
+// Matches MAX_THUMBNAIL_BYTES * 2 in lib/validation/diagram.ts. A 512px PNG
+// is far smaller, but the save must survive an unexpected encoder result.
+const MAX_VERSION_PREVIEW_DATA_URL_LENGTH = 4 * 1024 * 1024
 export const THUMBNAIL_REFRESH_INTERVAL_MS = 60_000
 
 /**
@@ -66,9 +69,15 @@ export function nextThumbnailBaseline(
  * canvas. Returns null when the source cannot be rasterized (e.g. tainted
  * canvas) - callers should simply skip the thumbnail in that case.
  */
-export async function toPngDataUrl(source: string): Promise<string | null> {
-    if (typeof document === "undefined") return null
-    if (source.startsWith("data:image/png")) return source
+function rasterizeToPng(
+    source: string,
+    maxDimension: number,
+    keepPngSource: boolean,
+): Promise<string | null> {
+    if (typeof document === "undefined") return Promise.resolve(null)
+    if (keepPngSource && source.startsWith("data:image/png")) {
+        return Promise.resolve(source)
+    }
 
     const url = source.startsWith("<svg")
         ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`
@@ -83,7 +92,7 @@ export async function toPngDataUrl(source: string): Promise<string | null> {
                 const height = image.naturalHeight || image.height || 1
                 const scale = Math.min(
                     1,
-                    MAX_THUMBNAIL_DIMENSION / Math.max(width, height),
+                    maxDimension / Math.max(width, height),
                 )
                 const canvas = document.createElement("canvas")
                 canvas.width = Math.max(1, Math.round(width * scale))
@@ -102,6 +111,23 @@ export async function toPngDataUrl(source: string): Promise<string | null> {
         image.onerror = () => resolve(null)
         image.src = url
     })
+}
+
+export function toPngDataUrl(source: string): Promise<string | null> {
+    return rasterizeToPng(source, MAX_THUMBNAIL_DIMENSION, true)
+}
+
+/**
+ * Always rasterizes and downscales the source to the thumbnail bounds. Used
+ * for version previews so a large Draw.io PNG export stays within the server
+ * image limit.
+ */
+export function toSizedPngDataUrl(source: string): Promise<string | null> {
+    return rasterizeToPng(source, MAX_THUMBNAIL_DIMENSION, false).then((png) =>
+        // The server rejects oversized data URLs, so treat an unexpectedly
+        // large preview as a failed preview instead of failing the save.
+        png && png.length <= MAX_VERSION_PREVIEW_DATA_URL_LENGTH ? png : null,
+    )
 }
 
 /**

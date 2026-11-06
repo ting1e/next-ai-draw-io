@@ -1,9 +1,60 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
     nextThumbnailBaseline,
     shouldRefreshThumbnail,
     THUMBNAIL_REFRESH_INTERVAL_MS,
+    toSizedPngDataUrl,
 } from "@/lib/thumbnails"
+
+afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+})
+
+describe("toSizedPngDataUrl", () => {
+    it("rasterizes an existing PNG so version previews stay within 512px", async () => {
+        const drawImage = vi.fn()
+        const canvas = {
+            width: 0,
+            height: 0,
+            getContext: () => ({ drawImage }),
+            toDataURL: () => "data:image/png;base64,resized",
+        }
+
+        class FakeImage {
+            decoding = ""
+            naturalWidth = 1024
+            naturalHeight = 768
+            width = 1024
+            height = 768
+            onload: (() => void) | null = null
+            onerror: (() => void) | null = null
+            set src(_value: string) {
+                this.onload?.()
+            }
+        }
+
+        vi.stubGlobal("Image", FakeImage)
+        const originalCreateElement = document.createElement.bind(document)
+        vi.spyOn(document, "createElement").mockImplementation(((
+            tag: string,
+            options?: ElementCreationOptions,
+        ) =>
+            tag === "canvas"
+                ? (canvas as unknown as HTMLElement)
+                : originalCreateElement(
+                      tag,
+                      options,
+                  )) as typeof document.createElement)
+
+        await expect(
+            toSizedPngDataUrl("data:image/png;base64,original"),
+        ).resolves.toBe("data:image/png;base64,resized")
+        expect(canvas.width).toBe(512)
+        expect(canvas.height).toBe(384)
+        expect(drawImage).toHaveBeenCalledTimes(1)
+    })
+})
 
 const BASE = {
     force: false,
